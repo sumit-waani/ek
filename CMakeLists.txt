@@ -57,6 +57,7 @@ set(EKA_SOURCES
     src/runtime/server.c
     src/builtins/builtins.c
     src/client/client_runtime.c
+    src/fmt/fmt.c
 )
 
 # -------------------------------------------------------------------

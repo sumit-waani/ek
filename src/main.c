@@ -3,6 +3,7 @@
 #include "parser/parser.h"
 #include "compiler/compiler.h"
 #include "runtime/server.h"
+#include "fmt/fmt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,8 +101,7 @@ int main(int argc, char **argv) {
     }
 
     case CLI_FMT: {
-        printf("eka: fmt — not implemented yet\n");
-        return 0;
+        return eka_fmt(args.file, args.check_only != 0);
     }
     }
 

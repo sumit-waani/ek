@@ -48,6 +48,13 @@ target_compile_options(test_compiler PRIVATE -g -O0)
 target_link_libraries(test_compiler PRIVATE m)
 add_test(NAME compiler COMMAND test_compiler)
 
+add_executable(test_fmt test_fmt.c
+    "${CMAKE_SOURCE_DIR}/src/fmt/fmt.c")
+target_include_directories(test_fmt PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(test_fmt PRIVATE -g -O0)
+target_link_libraries(test_fmt PRIVATE m)
+add_test(NAME fmt COMMAND test_fmt)
+
 # Builtins test — links all the real dependencies
 add_executable(test_builtins test_builtins.c
     "${CMAKE_SOURCE_DIR}/src/core/obj.c"
