@@ -13,6 +13,7 @@ typedef enum {
 
 typedef struct {
     const char      *source;       /* entire source string */
+    const char      *start;        /* start of current token being lexed */
     const char      *current;      /* current position */
     const char      *line_start;   /* start of current line */
     uint32_t         line;         /* 1-based */

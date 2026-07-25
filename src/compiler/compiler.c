@@ -677,10 +677,15 @@ eka_compiled_program_t *eka_compile(ast_node_t *program) {
                 int m = prog->method_count++;
                 prog->methods[m].method = node->as.method_block.method;
 
-                /* Extract path string from method AST */
+                /* Extract path string from method AST.
+                 * Intern the path so it's null-terminated — token.start
+                 * points into the source buffer which may not be. */
                 if (node->as.method_block.path &&
                     node->as.method_block.path->type == AST_LITERAL) {
-                    prog->methods[m].path = node->as.method_block.path->token.start;
+                    eka_string_t *path_str = eka_string_intern(
+                        node->as.method_block.path->token.start,
+                        node->as.method_block.path->token.length);
+                    prog->methods[m].path = path_str->data;
                 } else {
                     prog->methods[m].path = "/";
                 }

@@ -56,10 +56,10 @@ static void skip_whitespace(eka_lexer_t *lexer) {
 static eka_token_t make_token(eka_lexer_t *lexer, eka_token_type_t type) {
     eka_token_t token;
     token.type   = type;
-    token.start  = lexer->current;  /* set by caller if needed */
-    token.length = 0;
+    token.start  = lexer->start;
+    token.length = (int)(lexer->current - lexer->start);
     token.line   = lexer->line;
-    token.column = (uint32_t)(lexer->current - lexer->line_start) + 1;
+    token.column = (uint32_t)(lexer->start - lexer->line_start) + 1;
     return token;
 }
 
@@ -244,6 +244,9 @@ static eka_token_t lex_code_token(eka_lexer_t *lexer) {
         return make_token(lexer, TOKEN_EOF);
     }
 
+    /* Mark start of token */
+    lexer->start = lexer->current;
+
     /* Newline */
     if (peek(lexer) == '\n') {
         advance(lexer);
@@ -408,6 +411,7 @@ static eka_token_t lex_at_keyword(eka_lexer_t *lexer) {
 }
 
 static eka_token_t lex_template_expr(eka_lexer_t *lexer) {
+    lexer->start = lexer->current;
     advance(lexer); advance(lexer);  /* skip {{ */
     /* Auto-switch to CODE mode for the expression content */
     lexer->mode = LEX_MODE_CODE;
@@ -415,6 +419,7 @@ static eka_token_t lex_template_expr(eka_lexer_t *lexer) {
 }
 
 static eka_token_t lex_template_expr_end(eka_lexer_t *lexer) {
+    lexer->start = lexer->current;
     advance(lexer); advance(lexer);  /* skip }} */
     /* Auto-switch back to TEMPLATE mode */
     lexer->mode = LEX_MODE_TEMPLATE;
@@ -428,6 +433,7 @@ static eka_token_t lex_template_expr_end(eka_lexer_t *lexer) {
 void eka_lexer_init(eka_lexer_t *lexer, const char *source) {
     memset(lexer, 0, sizeof(*lexer));
     lexer->source     = source;
+    lexer->start      = source;
     lexer->current    = source;
     lexer->line_start = source;
     lexer->line       = 1;

@@ -48,6 +48,7 @@ static void skip_newlines(eka_parser_t *parser) {
 /* Switch lexer mode and re-read the next token in the new mode.
  * This discards parser->current (which is stale from the old mode). */
 static void switch_lexer_mode(eka_parser_t *parser, eka_lexer_mode_t mode) {
+    if (parser->lexer.mode == mode) return;  /* no-op — don't re-lex */
     eka_lexer_set_mode(&parser->lexer, mode);
     parser->current = eka_lexer_next(&parser->lexer);
 }

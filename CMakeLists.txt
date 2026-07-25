@@ -53,6 +53,8 @@ set(EKA_SOURCES
     src/parser/parser.c
     src/compiler/symtab.c
     src/compiler/compiler.c
+    src/runtime/http.c
+    src/runtime/server.c
 )
 
 # -------------------------------------------------------------------
