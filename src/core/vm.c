@@ -11,6 +11,19 @@
 
 void eka_vm_init(eka_vm_t *vm) {
     memset(vm, 0, sizeof(*vm));
+
+    /* Set this VM as the current GC target before allocating */
+    eka_gc_current_vm = vm;
+
+    /* Init GC state */
+    vm->gc_bytes_allocated = 0;
+    vm->gc_next_gc = EKA_ARENA_SIZE;
+    vm->gc_running = false;
+    vm->gc_arenas = NULL;
+    vm->gc_current = NULL;
+    vm->gc_all_objects = NULL;
+    vm->gc_root_count = 0;
+
     vm->globals = eka_map_new(64);
     vm->cache_store = eka_map_new(64);
     vm->response_state.status = 200;
@@ -23,8 +36,61 @@ void eka_vm_init(eka_vm_t *vm) {
 }
 
 void eka_vm_free(eka_vm_t *vm) {
-    /* Objects are GC-managed, nothing to free directly */
-    (void)vm;
+    /* Free all GC arenas (this drops all objects allocated by this VM) */
+    arena_t *a = vm->gc_arenas;
+    while (a) {
+        arena_t *next = a->next;
+        free(a->base);
+        free(a);
+        a = next;
+    }
+    vm->gc_arenas = NULL;
+    vm->gc_current = NULL;
+    vm->gc_all_objects = NULL;
+    vm->gc_bytes_allocated = 0;
+}
+
+void eka_vm_clone_globals(eka_vm_t *dest, const eka_vm_t *src) {
+    /* Shallow-copy the globals map pointer.
+     * Both VMs share the same global objects (in src's arenas).
+     * src must outlive dest — typically src is the master VM. */
+    eka_vm_t *prev = eka_gc_current_vm;
+    eka_gc_current_vm = dest;
+
+    /* Create a fresh globals map in dest's arena, then copy all entries */
+    dest->globals = eka_map_new(64);
+    eka_map_t *src_globals = src->globals;
+
+    if (src_globals) {
+        for (uint32_t i = 0; i < src_globals->capacity; i++) {
+            eka_map_entry_t *e = &src_globals->entries[i];
+            if (e->key && !eka_map_entry_is_tombstone(e->key)) {
+                eka_map_set(dest->globals, e->key, e->value);
+            }
+        }
+    }
+
+    /* Share the cache store (pointer copy — mutations are shared) */
+    /* But NOTE: if dest allocates new cache entries, they go into dest's arena.
+     * This is acceptable for V1 — cache is volatile and served from
+     * the master VM's store via shared pointer. */
+    dest->cache_store = src->cache_store;
+
+    /* Share session DB and DB connections (shared state) */
+    dest->session_db = src->session_db;
+    dest->db_conn_count = src->db_conn_count;
+    for (int i = 0; i < src->db_conn_count; i++) {
+        dest->db_conns[i] = src->db_conns[i];
+    }
+
+    /* Share SSE connection tracking (shared state) */
+    dest->sse_loop = src->sse_loop;
+    dest->sse_client_count = src->sse_client_count;
+    for (int i = 0; i < src->sse_client_count; i++) {
+        dest->sse_clients[i] = src->sse_clients[i];
+    }
+
+    eka_gc_current_vm = prev;
 }
 
 void eka_vm_set_global(eka_vm_t *vm, const char *name, eka_value_t value) {
@@ -98,9 +164,10 @@ static void set_error(const char **error_ptr, const char *msg) {
 #define READ_INSTR()  (*frame->ip++)
 #define PEEK_INSTR()  (*frame->ip)
 
-eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
-                           eka_value_t *args, int arg_count,
-                           const char **error) {
+/* Inner execution — assumes eka_gc_current_vm is already set. */
+static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
+                                        eka_value_t *args, int arg_count,
+                                        const char **error) {
     eka_func_t *func = closure->func;
 
     /* Set up the initial call frame */
@@ -519,6 +586,17 @@ eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
             return eka_nil();
         }
     }
+}
+
+/* Public entry point — sets GC context, delegates to inner, restores context. */
+eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
+                           eka_value_t *args, int arg_count,
+                           const char **error) {
+    eka_vm_t *prev_vm = eka_gc_current_vm;
+    eka_gc_current_vm = vm;
+    eka_value_t result = eka_vm_execute_inner(vm, closure, args, arg_count, error);
+    eka_gc_current_vm = prev_vm;
+    return result;
 }
 
 eka_value_t eka_vm_execute_init(eka_vm_t *vm, eka_closure_t *closure,

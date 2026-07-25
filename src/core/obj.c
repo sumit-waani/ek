@@ -1,35 +1,22 @@
 #include "core/obj.h"
+#include "core/vm.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
 /* ================================================================
- * Bump allocator with 1 MB arenas
+ * Bump allocator with 1 MB arenas — per-VM
  * ================================================================ */
 
-#define ARENA_SIZE (1024 * 1024)  /* 1 MB */
 
-typedef struct arena_t {
-    struct arena_t *next;
-    uint8_t        *base;
-    uint8_t        *top;
-    uint8_t        *end;
-} arena_t;
+/* The currently active VM for GC allocations.
+ * Set by eka_vm_init() and before each eka_vm_execute() call. */
+eka_vm_t *eka_gc_current_vm = NULL;
 
-static arena_t *gc_arenas = NULL;   /* linked list of all arenas */
-static arena_t *gc_current = NULL;  /* current arena for allocation */
-
-/* Head of the allocated objects list. Each object is inserted here
- * on allocation. GC traverses this to find all objects. */
-static eka_obj_t *gc_all_objects = NULL;
-
-/* GC threshold: when bytes_allocated exceeds next_gc, trigger collection. */
-static size_t   gc_bytes_allocated = 0;
-static size_t   gc_next_gc = ARENA_SIZE;
-static bool     gc_running = false;
-
-/* String interning table — simple open-addressed hash set. */
+/* String interning table — global, shared across all VMs.
+ * Interned strings are allocated from a dedicated permanent arena
+ * so they survive individual VM teardowns. */
 #define INTERN_INITIAL_CAP 256
 #define INTERN_MAX_LOAD    70   /* percent */
 
@@ -37,10 +24,14 @@ static eka_string_t **intern_table = NULL;
 static uint32_t       intern_capacity = 0;
 static uint32_t       intern_count = 0;
 
+/* Permanent arena pool just for interned strings. Never freed. */
+static arena_t *string_pool_arenas = NULL;
+static arena_t *string_pool_current = NULL;
+
 /* Forward declarations */
-static void gc_sweep(void);
-static void gc_mark_value(eka_value_t v);
-static void gc_mark_object(eka_obj_t *obj);
+static void gc_sweep(eka_vm_t *vm);
+static void gc_mark_value(eka_vm_t *vm, eka_value_t v);
+static void gc_mark_object(eka_vm_t *vm, eka_obj_t *obj);
 
 /* ================================================================
  * Arena management
@@ -52,37 +43,67 @@ static arena_t *arena_new(void) {
         fprintf(stderr, "eka: fatal: out of memory allocating arena\n");
         abort();
     }
-    a->base = malloc(ARENA_SIZE);
+    a->base = malloc(EKA_ARENA_SIZE);
     if (!a->base) {
         fprintf(stderr, "eka: fatal: out of memory allocating arena data\n");
         abort();
     }
     a->top  = a->base;
-    a->end  = a->base + ARENA_SIZE;
+    a->end  = a->base + EKA_ARENA_SIZE;
     a->next = NULL;
     return a;
 }
 
+/* Allocate from the currently active VM's arenas. */
 void *arena_alloc(size_t size) {
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (!vm) {
+        fprintf(stderr, "eka: fatal: arena_alloc called with no current VM\n");
+        abort();
+    }
+    return eka_vm_arena_alloc(vm, size);
+}
+
+/* Allocate from a specific VM's arenas. */
+void *eka_vm_arena_alloc(eka_vm_t *vm, size_t size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~((size_t)7);
 
-    if (!gc_current || (size_t)(gc_current->end - gc_current->top) < size) {
-        /* Need a new arena */
+    if (!vm->gc_current || (size_t)(vm->gc_current->end - vm->gc_current->top) < size) {
         arena_t *a = arena_new();
-        a->next = gc_arenas;
-        gc_arenas = a;
-        gc_current = a;
-        /* Check if single allocation is too big for one arena */
-        if (size > ARENA_SIZE) {
+        a->next = vm->gc_arenas;
+        vm->gc_arenas = a;
+        vm->gc_current = a;
+        if (size > EKA_ARENA_SIZE) {
             fprintf(stderr, "eka: fatal: allocation of %zu bytes exceeds arena size\n", size);
             abort();
         }
     }
 
-    void *ptr = gc_current->top;
-    gc_current->top += size;
-    gc_bytes_allocated += size;
+    void *ptr = vm->gc_current->top;
+    vm->gc_current->top += size;
+    vm->gc_bytes_allocated += size;
+    return ptr;
+}
+
+/* Allocate from the permanent string pool (never freed). */
+static void *string_pool_alloc(size_t size) {
+    size = (size + 7) & ~((size_t)7);
+
+    if (!string_pool_current ||
+        (size_t)(string_pool_current->end - string_pool_current->top) < size) {
+        arena_t *a = arena_new();
+        a->next = string_pool_arenas;
+        string_pool_arenas = a;
+        string_pool_current = a;
+        if (size > EKA_ARENA_SIZE) {
+            fprintf(stderr, "eka: fatal: string pool allocation of %zu bytes exceeds arena size\n", size);
+            abort();
+        }
+    }
+
+    void *ptr = string_pool_current->top;
+    string_pool_current->top += size;
     return ptr;
 }
 
@@ -91,23 +112,29 @@ void *arena_alloc(size_t size) {
  * ================================================================ */
 
 void *eka_obj_alloc(eka_objtype_t type, size_t extra_bytes) {
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (!vm) {
+        fprintf(stderr, "eka: fatal: eka_obj_alloc called with no current VM\n");
+        abort();
+    }
+
     /* GC trigger check */
-    if (gc_bytes_allocated >= gc_next_gc && !gc_running) {
-        gc_sweep();
-        gc_next_gc = gc_bytes_allocated + ARENA_SIZE;
-        if (gc_next_gc < ARENA_SIZE) gc_next_gc = ARENA_SIZE;
+    if (vm->gc_bytes_allocated >= vm->gc_next_gc && !vm->gc_running) {
+        gc_sweep(vm);
+        vm->gc_next_gc = vm->gc_bytes_allocated + EKA_ARENA_SIZE;
+        if (vm->gc_next_gc < EKA_ARENA_SIZE) vm->gc_next_gc = EKA_ARENA_SIZE;
     }
 
     size_t total = sizeof(eka_obj_t) + extra_bytes;
-    eka_obj_t *obj = arena_alloc(total);
+    eka_obj_t *obj = eka_vm_arena_alloc(vm, total);
 
     memset(obj, 0, sizeof(eka_obj_t));
     obj->type   = type;
     obj->marked = false;
 
-    /* Thread into the all-objects list */
-    obj->next = gc_all_objects;
-    gc_all_objects = obj;
+    /* Thread into the VM's all-objects list */
+    obj->next = vm->gc_all_objects;
+    vm->gc_all_objects = obj;
 
     return obj;
 }
@@ -187,9 +214,14 @@ eka_string_t *eka_string_intern(const char *src, size_t length) {
         }
     }
 
-    /* Allocate new string object */
+    /* Allocate new string object from the permanent string pool.
+     * This ensures interned strings survive individual VM teardowns. */
     size_t alloc_size = sizeof(eka_string_t) + length + 1;
-    eka_string_t *s = eka_obj_alloc(OBJ_STRING, alloc_size - sizeof(eka_obj_t));
+    eka_string_t *s = string_pool_alloc(alloc_size);
+    memset(s, 0, sizeof(eka_string_t));
+    s->header.type   = OBJ_STRING;
+    s->header.marked = false;   /* never collected from per-VM GC */
+    s->header.next   = NULL;    /* not in any VM's gc_all_objects list */
     s->length = (uint32_t)length;
     s->hash   = hash;
     memcpy(s->data, src, length);
@@ -228,8 +260,13 @@ eka_string_t *eka_string_take(char *data, size_t length) {
     uint32_t idx = hash % intern_capacity;
     while (intern_table[idx]) idx = (idx + 1) % intern_capacity;
 
+    /* Allocate from string pool so interned strings are permanent */
     size_t alloc_size = sizeof(eka_string_t) + length + 1;
-    eka_string_t *s = eka_obj_alloc(OBJ_STRING, alloc_size - sizeof(eka_obj_t));
+    eka_string_t *s = string_pool_alloc(alloc_size);
+    memset(s, 0, sizeof(eka_string_t));
+    s->header.type   = OBJ_STRING;
+    s->header.marked = false;
+    s->header.next   = NULL;
     s->length = (uint32_t)length;
     s->hash   = hash;
     memcpy(s->data, data, length);
@@ -537,43 +574,45 @@ eka_rawstring_t *eka_rawstring_new(const char *src, size_t length) {
 }
 
 /* ================================================================
- * Mark-sweep GC
+ * Mark-sweep GC — per-VM
  * ================================================================ */
 
-/* GC roots. External code registers roots here before GC runs. */
-#define GC_MAX_ROOTS 256
-static eka_value_t gc_roots[GC_MAX_ROOTS];
-static int         gc_root_count = 0;
-
 void eka_gc_add_root(eka_value_t v) {
-    if (gc_root_count < GC_MAX_ROOTS) {
-        gc_roots[gc_root_count++] = v;
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (!vm) return;
+    if (vm->gc_root_count < EKA_GC_MAX_ROOTS) {
+        vm->gc_roots[vm->gc_root_count++] = v;
     }
 }
 
 void eka_gc_clear_roots(void) {
-    gc_root_count = 0;
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (!vm) return;
+    vm->gc_root_count = 0;
 }
 
-static void gc_mark_value(eka_value_t v) {
+static void gc_mark_value(eka_vm_t *vm, eka_value_t v) {
     if (eka_is_obj(v)) {
-        gc_mark_object(eka_as_obj(v));
+        gc_mark_object(vm, eka_as_obj(v));
     }
 }
 
-static void gc_mark_object(eka_obj_t *obj) {
+static void gc_mark_object(eka_vm_t *vm, eka_obj_t *obj) {
+    (void)vm;  /* vm may be used for future per-VM tracking */
     if (!obj || obj->marked) return;
     obj->marked = true;
 
     switch (obj->type) {
     case OBJ_STRING:
-        /* Strings are interned — no outgoing references */
+        /* Strings are interned in the global string pool — no outgoing refs to mark.
+         * Note: strings allocated in per-VM arenas (if any) are also marked here,
+         * but since they're always interned, they're in the string pool. */
         break;
 
     case OBJ_LIST: {
         eka_list_t *list = (eka_list_t *)obj;
         for (uint32_t i = 0; i < list->length; i++) {
-            gc_mark_value(list->items[i]);
+            gc_mark_value(vm, list->items[i]);
         }
         break;
     }
@@ -582,8 +621,8 @@ static void gc_mark_object(eka_obj_t *obj) {
         eka_map_t *map = (eka_map_t *)obj;
         for (uint32_t i = 0; i < map->capacity; i++) {
             if (map->entries[i].key && map->entries[i].key != TOMBSTONE) {
-                gc_mark_object(&map->entries[i].key->header);
-                gc_mark_value(map->entries[i].value);
+                gc_mark_object(vm, &map->entries[i].key->header);
+                gc_mark_value(vm, map->entries[i].value);
             }
         }
         break;
@@ -592,7 +631,7 @@ static void gc_mark_object(eka_obj_t *obj) {
     case OBJ_FUNC: {
         eka_func_t *func = (eka_func_t *)obj;
         for (uint32_t i = 0; i < func->constants_count; i++) {
-            gc_mark_value(func->constants[i]);
+            gc_mark_value(vm, func->constants[i]);
         }
         break;
     }
@@ -604,10 +643,10 @@ static void gc_mark_object(eka_obj_t *obj) {
 
     case OBJ_CLOSURE: {
         eka_closure_t *cl = (eka_closure_t *)obj;
-        gc_mark_object(&cl->func->header);
+        gc_mark_object(vm, &cl->func->header);
         for (uint32_t i = 0; i < cl->upvalue_count; i++) {
             if (cl->upvalues[i]) {
-                gc_mark_object(&cl->upvalues[i]->header);
+                gc_mark_object(vm, &cl->upvalues[i]->header);
             }
         }
         break;
@@ -615,18 +654,18 @@ static void gc_mark_object(eka_obj_t *obj) {
 
     case OBJ_UPVALUE: {
         eka_upvalue_t *uv = (eka_upvalue_t *)obj;
-        gc_mark_value(uv->closed);
+        gc_mark_value(vm, uv->closed);
         break;
     }
     }
 }
 
-static void gc_sweep(void) {
-    gc_running = true;
+static void gc_sweep(eka_vm_t *vm) {
+    vm->gc_running = true;
 
     /* Mark phase: mark all roots */
-    for (int i = 0; i < gc_root_count; i++) {
-        gc_mark_value(gc_roots[i]);
+    for (int i = 0; i < vm->gc_root_count; i++) {
+        gc_mark_value(vm, vm->gc_roots[i]);
     }
     /* Also mark all interned strings (they're always reachable) */
     if (intern_table) {
@@ -637,42 +676,30 @@ static void gc_sweep(void) {
         }
     }
 
-    /* Sweep phase: reset arenas and rebuild */
-    /* For simplicity in V1, we reset ALL arenas and re-allocate live objects.
-     * This is stop-and-copy style on top of the mark bits.
-     *
-     * Actually, simpler approach: just walk the object list freeing whitespace.
-     * But with the bump allocator, we can't free individual objects.
-     *
-     * The practical approach for V1: if too much garbage, compact by
-     * resetting arenas and copying live objects. But that requires
-     * updating all pointers — expensive.
-     *
-     * For now: just reset marked bits and track. GC is triggered before
-     * we run out of arena space. Real compaction will come in V2.
-     * The bump allocator just keeps going — "sweeping" means resetting marks.
-     */
-
-    /* Reset all mark bits (for next GC cycle) */
-    for (eka_obj_t *obj = gc_all_objects; obj; obj = obj->next) {
+    /* Sweep phase: in V1, just reset mark bits for next cycle.
+     * Actual memory reclamation happens when the VM is freed
+     * (all arenas freed at once). */
+    for (eka_obj_t *obj = vm->gc_all_objects; obj; obj = obj->next) {
         obj->marked = false;
     }
 
-    gc_running = false;
+    vm->gc_running = false;
 }
 
 /* ================================================================
- * GC lifecycle — called on each request boundary
+ * GC lifecycle
  * ================================================================ */
 
 void eka_gc_collect(void) {
-    if (!gc_running) {
-        gc_sweep();
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (vm && !vm->gc_running) {
+        gc_sweep(vm);
     }
 }
 
 /* Get GC stats for debugging */
 void eka_gc_stats(size_t *allocated, size_t *next_gc) {
-    if (allocated) *allocated = gc_bytes_allocated;
-    if (next_gc) *next_gc = gc_next_gc;
+    eka_vm_t *vm = eka_gc_current_vm;
+    if (allocated) *allocated = vm ? vm->gc_bytes_allocated : 0;
+    if (next_gc) *next_gc = vm ? vm->gc_next_gc : 0;
 }

@@ -2,6 +2,7 @@
  * tests/test_obj.c — Object allocation, GC, string interning, list/map ops
  */
 #include "core/obj.h"
+#include "core/vm.h"  /* for eka_vm_init (arena allocation needs a VM) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,9 @@ static int tests_failed = 0;
 #define PASS()      do { printf("PASS\n"); } while(0)
 #define FAIL(msg)   do { printf("FAIL: %s\n", msg); tests_failed++; } while(0)
 #define CHECK(cond, msg) do { if (!(cond)) { FAIL(msg); return; } } while(0)
+
+/* The GC allocator needs an active VM. Set one up for all tests. */
+static eka_vm_t test_vm;
 
 /* --- String tests --- */
 
@@ -219,6 +223,7 @@ static void test_gc_no_crash(void) {
 
 int main(void) {
     printf("object / GC tests:\n");
+    eka_vm_init(&test_vm);  /* required for arena allocation */
     test_string_alloc();
     test_string_interning();
     test_string_hash();

@@ -218,8 +218,11 @@ static void test_global_assignment(void) {
     PASS();
 }
 
+static eka_vm_t test_vm;
+
 int main(void) {
     printf("compiler tests:\n");
+    eka_vm_init(&test_vm);  /* required for arena allocation */
     test_init_let();
     test_method_simple();
     test_method_with_expr();

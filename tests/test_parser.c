@@ -2,10 +2,13 @@
  * tests/test_parser.c — Parser smoke tests
  */
 #include "parser/parser.h"
+#include "core/vm.h"  /* for eka_vm_init (arena allocation needs a VM) */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static eka_vm_t test_vm;
 
 static int tests_run = 0;
 static int tests_failed = 0;
@@ -242,6 +245,7 @@ static void test_template_if(void) {
 
 int main(void) {
     printf("parser tests:\n");
+    eka_vm_init(&test_vm);  /* required for arena allocation */
     test_empty();
     test_let_int();
     test_let_string();

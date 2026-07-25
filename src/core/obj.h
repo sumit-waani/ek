@@ -5,6 +5,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+
+/* Arena size for bump allocator (1 MB) */
+#define EKA_ARENA_SIZE (1024 * 1024)
+
+/* Per-VM arena allocation (declared here for vm.c use) */
+struct eka_vm_t;
+void *eka_vm_arena_alloc(struct eka_vm_t *vm, size_t size);
 
 /* ================================================================
  * Concrete object types

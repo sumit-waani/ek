@@ -125,74 +125,85 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         return;
     }
 
+    /* ---------------------------------------------------------------
+     * Worker VM: fresh VM per request with own GC arenas.
+     * Globals are shallow-copied from the master VM.
+     * This gives full request isolation — no shared mutable VM state.
+     * --------------------------------------------------------------- */
+    eka_vm_t worker;
+    eka_vm_init(&worker);                    /* creates own arenas, sets eka_gc_current_vm */
+    eka_vm_clone_globals(&worker, s->vm);   /* copy globals from master */
+
     /* Set up per-request builtins (request, response) */
-    eka_builtins_setup_request(s->vm, req);
+    eka_builtins_setup_request(&worker, req);
 
     /* Set SSE context: current client + event loop */
-    s->vm->current_client = &conn->client;
-    s->vm->sse_loop = s->loop;
+    worker.current_client = &conn->client;
+    worker.sse_loop = s->loop;
 
-    /* Execute the method's bytecode */
+    /* Execute the method's bytecode (eKa_vm_execute sets eka_gc_current_vm internally) */
     eka_closure_t *cl = eka_closure_new(s->prog->methods[midx].func);
     const char *err = NULL;
-    eka_value_t result = eka_vm_execute(s->vm, cl, NULL, 0, &err);
+    eka_value_t result = eka_vm_execute(&worker, cl, NULL, 0, &err);
 
     if (err) {
         char err_body[256];
         int len = snprintf(err_body, sizeof(err_body), "500 Internal Server Error: %s", err);
         conn->response_data = build_response(err_body, (size_t)len, 500,
                                               "text/plain", &conn->response_len);
-        eka_builtins_teardown_request(s->vm);
+        eka_builtins_teardown_request(&worker);
+        eka_vm_free(&worker);
         return;
     }
 
-    /* Handle redirect (read from VM before teardown) */
-    if (s->vm->response_state.is_redirect) {
+    /* Handle redirect (read from worker VM before teardown) */
+    if (worker.response_state.is_redirect) {
         char location_hdr[320];
         int loc_len = snprintf(location_hdr, sizeof(location_hdr),
                                "HTTP/1.1 %d Found\r\nLocation: %s\r\n"
                                "Content-Length: 0\r\nConnection: close\r\n\r\n",
-                               s->vm->response_state.redirect_status,
-                               s->vm->response_state.redirect_location);
+                               worker.response_state.redirect_status,
+                               worker.response_state.redirect_location);
         conn->response_data = malloc((size_t)loc_len + 1);
         if (conn->response_data) {
             memcpy(conn->response_data, location_hdr, (size_t)loc_len + 1);
             conn->response_len = (size_t)loc_len;
         }
-        eka_builtins_teardown_request(s->vm);
+        eka_builtins_teardown_request(&worker);
+        eka_vm_free(&worker);
         return;
     }
 
     /* Build response from result or explicit body.
-     * Must happen BEFORE teardown — body may point into VM-owned memory. */
+     * Must happen BEFORE teardown — body may point into worker VM memory. */
     const char *body;
     size_t body_len;
     const char *content_type;
     char *owned_body = NULL;  /* if we need to own a copy */
 
-    if (s->vm->response_state.body_set) {
+    if (worker.response_state.body_set) {
         /* response.html/json was called — body is heap-allocated by builtins.
          * Transfer ownership: we take it and will free it ourselves. */
-        body = s->vm->response_state.body;
-        body_len = s->vm->response_state.body_len;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        body = worker.response_state.body;
+        body_len = worker.response_state.body_len;
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/html; charset=utf-8";
-        owned_body = s->vm->response_state.body;  /* take ownership */
-        s->vm->response_state.body = NULL;          /* prevent double-free */
+        owned_body = worker.response_state.body;  /* take ownership */
+        worker.response_state.body = NULL;          /* prevent double-free */
     } else if (eka_obj_is_type(result, OBJ_STRING)) {
         eka_string_t *sres = eka_as_string(result);
         body = sres->data;
         body_len = sres->length;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/html; charset=utf-8";
     } else if (eka_obj_is_type(result, OBJ_RAWSTRING)) {
         eka_rawstring_t *raw = eka_as_rawstring(result);
         body = raw->data;
         body_len = raw->length;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/html; charset=utf-8";
     } else if (eka_is_number(result) || eka_is_int(result)) {
         static char num_buf[64];
@@ -201,20 +212,20 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         int n = snprintf(num_buf, sizeof(num_buf), "%g", d);
         body = num_buf;
         body_len = (size_t)n;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/plain";
     } else if (eka_is_bool(result)) {
         body = eka_as_bool(result) ? "true" : "false";
         body_len = eka_as_bool(result) ? 4 : 5;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/plain";
     } else if (eka_is_nil(result)) {
         body = "";
         body_len = 0;
-        content_type = s->vm->response_state.content_type_set
-                       ? s->vm->response_state.content_type
+        content_type = worker.response_state.content_type_set
+                       ? worker.response_state.content_type
                        : "text/plain";
     } else {
         /* Map or list — serialize as JSON */
@@ -224,17 +235,20 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         content_type = "application/json";
     }
 
-    int resp_status = s->vm->response_state.status ? s->vm->response_state.status : 200;
+    int resp_status = worker.response_state.status ? worker.response_state.status : 200;
     conn->response_data = build_response(body, body_len, resp_status,
                                           content_type, &conn->response_len);
 
     /* Teardown now (response already built) — this frees body if we didn't take ownership */
-    eka_builtins_teardown_request(s->vm);
+    eka_builtins_teardown_request(&worker);
 
     /* If we took ownership of the body, free it after building the response */
     if (owned_body) {
         free(owned_body);
     }
+
+    /* Free worker VM and all its GC arenas */
+    eka_vm_free(&worker);
 }
 
 /* ================================================================
@@ -347,8 +361,9 @@ eka_server_t *eka_server_create(eka_compiled_program_t *prog,
     s->loop       = malloc(sizeof(uv_loop_t));
     uv_loop_init(s->loop);
 
-    /* Create the init VM and execute init code */
-    s->vm = arena_alloc(sizeof(eka_vm_t));
+    /* Create the master VM with its own GC arenas.
+     * eka_vm_init() sets eka_gc_current_vm so arena_alloc works. */
+    s->vm = malloc(sizeof(eka_vm_t));
     eka_vm_init(s->vm);
 
     /* Register builtins before running init code */
@@ -401,6 +416,10 @@ void eka_server_stop(eka_server_t *server) {
 }
 
 void eka_server_free(eka_server_t *server) {
+    if (server->vm) {
+        eka_vm_free(server->vm);
+        free(server->vm);
+    }
     if (server->loop) {
         uv_loop_close(server->loop);
         free(server->loop);

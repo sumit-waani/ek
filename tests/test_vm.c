@@ -296,8 +296,12 @@ static void test_div_by_zero(void) {
     PASS();
 }
 
+/* Scratch VM for arena allocation in test helpers (make_func, make_closure). */
+static eka_vm_t scratch_vm;
+
 int main(void) {
     printf("VM tests:\n");
+    eka_vm_init(&scratch_vm);  /* sets eka_gc_current_vm for arena_alloc */
     test_return_constant();
     test_add_ints();
     test_string_concat();

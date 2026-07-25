@@ -23,8 +23,17 @@
 
 /* Forward declarations */
 struct sqlite3;
+struct arena_t;
 typedef struct eka_http_request_t eka_http_request_t;
 typedef struct uv_tcp_s         uv_tcp_t;
+
+/* GC arena linked list node */
+typedef struct arena_t {
+    struct arena_t *next;
+    uint8_t        *base;
+    uint8_t        *top;
+    uint8_t        *end;
+} arena_t;
 
 /* Call frame */
 typedef struct {
@@ -98,12 +107,36 @@ typedef struct eka_vm_t {
 
     /* --- Session store (SQLite) --- */
     void           *session_db;                       /* sqlite3* */
+
+    /* --- GC state (per-VM arenas) --- */
+    arena_t        *gc_arenas;          /* linked list of all arenas */
+    arena_t        *gc_current;         /* current arena for allocation */
+    eka_obj_t      *gc_all_objects;     /* head of allocated objects list */
+    size_t          gc_bytes_allocated; /* bytes allocated since last GC */
+    size_t          gc_next_gc;         /* threshold for triggering GC */
+    bool            gc_running;         /* true during GC */
+
+    /* GC roots */
+    #define EKA_GC_MAX_ROOTS 256
+    eka_value_t     gc_roots[EKA_GC_MAX_ROOTS];
+    int             gc_root_count;
 } eka_vm_t;
+
+/* Global: which VM's GC arena is currently active.
+ * Set before executing bytecode or allocating objects.
+ * The init/server VM keeps this set for its lifetime.
+ * Worker VMs set it before execution and restore after. */
+extern eka_vm_t *eka_gc_current_vm;
 
 /* --- VM lifecycle --- */
 
 void eka_vm_init(eka_vm_t *vm);
 void eka_vm_free(eka_vm_t *vm);
+
+/* Create a worker VM with the same global variables as the master.
+ * Globals are shallow-copied (same object pointers) — the master VM's
+ * globals must remain alive for the worker's lifetime. */
+void eka_vm_clone_globals(eka_vm_t *dest, const eka_vm_t *src);
 
 /* Set a global variable (init phase) */
 void eka_vm_set_global(eka_vm_t *vm, const char *name, eka_value_t value);

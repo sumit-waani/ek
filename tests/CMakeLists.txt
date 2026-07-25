@@ -4,7 +4,7 @@ target_compile_options(test_value PRIVATE -g -O0)
 target_link_libraries(test_value PRIVATE m)
 add_test(NAME value COMMAND test_value)
 
-add_executable(test_obj test_obj.c "${CMAKE_SOURCE_DIR}/src/core/obj.c")
+add_executable(test_obj test_obj.c "${CMAKE_SOURCE_DIR}/src/core/obj.c" "${CMAKE_SOURCE_DIR}/src/core/vm.c")
 target_include_directories(test_obj PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_obj PRIVATE -g -O0)
 target_link_libraries(test_obj PRIVATE m)
@@ -27,7 +27,8 @@ add_executable(test_parser test_parser.c
     "${CMAKE_SOURCE_DIR}/src/lexer/lexer.c"
     "${CMAKE_SOURCE_DIR}/src/parser/ast.c"
     "${CMAKE_SOURCE_DIR}/src/parser/parser.c"
-    "${CMAKE_SOURCE_DIR}/src/core/obj.c")
+    "${CMAKE_SOURCE_DIR}/src/core/obj.c"
+    "${CMAKE_SOURCE_DIR}/src/core/vm.c")
 target_include_directories(test_parser PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_parser PRIVATE -g -O0)
 target_link_libraries(test_parser PRIVATE m)
