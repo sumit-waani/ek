@@ -291,33 +291,29 @@ uint32_t eka_string_hash(eka_string_t *s) {
 
 eka_list_t *eka_list_new(uint32_t initial_capacity) {
     if (initial_capacity < 4) initial_capacity = 4;
-    size_t extra = sizeof(eka_value_t) * initial_capacity;
-    eka_list_t *list = eka_obj_alloc(OBJ_LIST, sizeof(eka_list_t) - sizeof(eka_obj_t) + extra);
+    /* Allocate only the struct from the arena — no flex array.
+     * The data array is heap-allocated so realloc can grow it. */
+    eka_list_t *list = eka_obj_alloc(OBJ_LIST, sizeof(eka_list_t) - sizeof(eka_obj_t));
     list->capacity = initial_capacity;
     list->length = 0;
+    list->items = malloc(sizeof(eka_value_t) * initial_capacity);
+    if (!list->items) {
+        fprintf(stderr, "eka: fatal: out of memory allocating list data\n");
+        abort();
+    }
     return list;
 }
 
 static void list_grow(eka_list_t *list) {
-    /* Lists are allocated with flexible array, so we can't realloc.
-     * Instead, allocate a new bigger list and copy. */
     uint32_t new_cap = list->capacity * 2;
-    size_t extra = sizeof(eka_value_t) * new_cap;
-    eka_list_t *new_list = eka_obj_alloc(OBJ_LIST,
-        sizeof(eka_list_t) - sizeof(eka_obj_t) + extra);
-    new_list->capacity = new_cap;
-    new_list->length = list->length;
-    memcpy(new_list->items, list->items, sizeof(eka_value_t) * list->length);
-    /* Note: the old list object still exists but is now garbage.
-     * The caller must use the returned pointer, but our API is by-reference...
-     * This is a known limitation of flex-array lists with GC.
-     * For now, we'll over-allocate and use a pointer swap trick. */
-    
-    /* HACK: copy the new header fields back to the old object.
-     * This works because the old object is at least as big as sizeof(eka_obj_t). */
-    /* Actually, we can't do this cleanly. Let's use a different approach. */
-    (void)new_list;
-    /* Fall through to simple approach for now — just assert. */
+    eka_value_t *new_items = realloc(list->items, sizeof(eka_value_t) * new_cap);
+    if (!new_items) {
+        fprintf(stderr, "eka: fatal: out of memory growing list (capacity %u -> %u)\n",
+                list->capacity, new_cap);
+        abort();
+    }
+    list->items = new_items;
+    list->capacity = new_cap;
 }
 
 void eka_list_push(eka_list_t *list, eka_value_t value) {
@@ -354,12 +350,16 @@ void eka_list_remove_at(eka_list_t *list, uint32_t idx) {
 
 eka_map_t *eka_map_new(uint32_t initial_capacity) {
     if (initial_capacity < 8) initial_capacity = 8;
-    size_t entries_size = sizeof(eka_map_entry_t) * initial_capacity;
-    eka_map_t *map = eka_obj_alloc(OBJ_MAP,
-        sizeof(eka_map_t) - sizeof(eka_obj_t) + entries_size);
+    /* Allocate only the struct from the arena — no flex array.
+     * The entries array is heap-allocated so realloc can grow it. */
+    eka_map_t *map = eka_obj_alloc(OBJ_MAP, sizeof(eka_map_t) - sizeof(eka_obj_t));
     map->capacity = initial_capacity;
     map->length = 0;
-    memset(map->entries, 0, entries_size);
+    map->entries = calloc(initial_capacity, sizeof(eka_map_entry_t));
+    if (!map->entries) {
+        fprintf(stderr, "eka: fatal: out of memory allocating map data\n");
+        abort();
+    }
     return map;
 }
 
@@ -446,27 +446,33 @@ static void map_grow(eka_map_t *map) {
     eka_map_entry_t *old_entries = map->entries;
 
     uint32_t new_cap = old_cap * 2;
-    size_t entries_size = sizeof(eka_map_entry_t) * new_cap;
-    eka_map_t *new_map = eka_obj_alloc(OBJ_MAP,
-        sizeof(eka_map_t) - sizeof(eka_obj_t) + entries_size);
-    new_map->capacity = new_cap;
-    new_map->length = 0;
-    memset(new_map->entries, 0, entries_size);
+    eka_map_entry_t *new_entries = calloc(new_cap, sizeof(eka_map_entry_t));
+    if (!new_entries) {
+        fprintf(stderr, "eka: fatal: out of memory growing map (capacity %u -> %u)\n",
+                old_cap, new_cap);
+        abort();
+    }
+
+    /* Rehash all live entries into the new array.
+     * We also need to reset the length counter since eka_map_set increments it. */
+    map->entries = new_entries;
+    map->capacity = new_cap;
+    uint32_t live_count = 0;
 
     for (uint32_t i = 0; i < old_cap; i++) {
-        eka_map_entry_t *e = &old_entries[i];
-        if (e->key && e->key != TOMBSTONE) {
-            eka_map_set(new_map, e->key, e->value);
+        if (old_entries[i].key && old_entries[i].key != TOMBSTONE) {
+            /* Insert directly into new array (linear probe, no tombstones in fresh array) */
+            uint32_t idx = old_entries[i].key->hash % new_cap;
+            while (new_entries[idx].key != NULL) {
+                idx = (idx + 1) % new_cap;
+            }
+            new_entries[idx] = old_entries[i];
+            live_count++;
         }
     }
 
-    /* Copy new state back to old map (same trick as list) */
-    map->capacity = new_map->capacity;
-    map->length = new_map->length;
-    /* Can't copy entries array since flex arrays differ. 
-     * This is a fundamental issue with grow-in-place on flex arrays.
-     * For V1, maps will pre-allocate generously. */
-    (void)entries_size;
+    map->length = live_count;
+    free(old_entries);
 }
 
 bool eka_map_entry_is_tombstone(eka_string_t *key) {
@@ -702,4 +708,37 @@ void eka_gc_stats(size_t *allocated, size_t *next_gc) {
     eka_vm_t *vm = eka_gc_current_vm;
     if (allocated) *allocated = vm ? vm->gc_bytes_allocated : 0;
     if (next_gc) *next_gc = vm ? vm->gc_next_gc : 0;
+}
+
+/* ================================================================
+ * Heap data cleanup for lists/maps
+ *
+ * List and map data arrays are heap-allocated (malloc/realloc) so they
+ * can grow. They must be freed separately from the arena-managed object
+ * headers. Call this before freeing arenas in eka_vm_free.
+ * ================================================================ */
+
+void eka_obj_free_heap_data(eka_vm_t *vm) {
+    for (eka_obj_t *obj = vm->gc_all_objects; obj; obj = obj->next) {
+        switch (obj->type) {
+        case OBJ_LIST: {
+            eka_list_t *list = (eka_list_t *)obj;
+            if (list->items) {
+                free(list->items);
+                list->items = NULL;
+            }
+            break;
+        }
+        case OBJ_MAP: {
+            eka_map_t *map = (eka_map_t *)obj;
+            if (map->entries) {
+                free(map->entries);
+                map->entries = NULL;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
 }

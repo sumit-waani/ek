@@ -208,6 +208,64 @@ static void test_map_delete(void) {
     PASS();
 }
 
+/* --- List grow stress test --- */
+
+static void test_list_grow(void) {
+    TEST("list grow (push 1000 items, capacity starts at 4)");
+    eka_list_t *list = eka_list_new(4);
+    CHECK(list->capacity == 4, "initial capacity should be 4");
+
+    /* Push 1000 items — triggers multiple grows */
+    for (int i = 0; i < 1000; i++) {
+        eka_list_push(list, eka_int(i));
+    }
+
+    CHECK(list->length == 1000, "length should be 1000");
+    CHECK(list->capacity >= 1000, "capacity should be >= 1000");
+
+    /* Verify every single item */
+    bool all_correct = true;
+    for (int i = 0; i < 1000; i++) {
+        if (!eka_is_int(list->items[i]) || eka_as_int(list->items[i]) != i) {
+            all_correct = false;
+            break;
+        }
+    }
+    CHECK(all_correct, "all 1000 items must be correct after multiple grows");
+    PASS();
+}
+
+/* --- Map grow stress test --- */
+
+static void test_map_grow(void) {
+    TEST("map grow (insert 500 entries, capacity starts at 8)");
+    eka_map_t *map = eka_map_new(8);
+    CHECK(map->capacity == 8, "initial capacity should be 8");
+
+    /* Create 500 unique keys and insert them */
+    char key_buf[32];
+    eka_string_t *keys[500];
+    for (int i = 0; i < 500; i++) {
+        int len = snprintf(key_buf, sizeof(key_buf), "key_%d", i);
+        keys[i] = eka_string_intern(key_buf, (size_t)len);
+        eka_map_set(map, keys[i], eka_int(i * 10));
+    }
+
+    CHECK(map->length == 500, "length should be 500");
+
+    /* Verify every single entry */
+    bool all_correct = true;
+    for (int i = 0; i < 500; i++) {
+        eka_value_t v = eka_map_get(map, keys[i]);
+        if (!eka_is_int(v) || eka_as_int(v) != i * 10) {
+            all_correct = false;
+            break;
+        }
+    }
+    CHECK(all_correct, "all 500 entries must be retrievable after multiple grows");
+    PASS();
+}
+
 /* --- GC smoke test --- */
 
 static void test_gc_no_crash(void) {
@@ -234,10 +292,12 @@ int main(void) {
     test_list_pop_empty();
     test_list_insert();
     test_list_remove_at();
+    test_list_grow();
     test_map_basic();
     test_map_missing_key();
     test_map_overwrite();
     test_map_delete();
+    test_map_grow();
     test_gc_no_crash();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);

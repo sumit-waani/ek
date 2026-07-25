@@ -31,7 +31,7 @@ typedef struct {
     eka_obj_t   header;
     uint32_t    capacity;
     uint32_t    length;
-    eka_value_t items[];    /* flexible array */
+    eka_value_t *items;     /* heap-allocated data array (realloc-able) */
 } eka_list_t;
 
 /* --- Map entry --- */
@@ -45,7 +45,7 @@ typedef struct {
     eka_obj_t       header;
     uint32_t        capacity;   /* size of entries array */
     uint32_t        length;     /* number of entries */
-    eka_map_entry_t entries[];  /* linear-probed open addressing */
+    eka_map_entry_t *entries;   /* heap-allocated data array (realloc-able) */
 } eka_map_t;
 
 /* --- Function (bytecode) --- */
@@ -134,6 +134,10 @@ eka_value_t eka_map_get(eka_map_t *map, eka_string_t *key);
 bool        eka_map_has(eka_map_t *map, eka_string_t *key);
 void        eka_map_delete(eka_map_t *map, eka_string_t *key);
 bool        eka_map_entry_is_tombstone(eka_string_t *key);
+
+/* Free heap-allocated data arrays for a VM's lists/maps.
+ * Called by eka_vm_free before freeing arenas. */
+void        eka_obj_free_heap_data(eka_vm_t *vm);
 
 /* --- Function --- */
 eka_func_t *eka_func_new(uint32_t arity, uint32_t max_arity,

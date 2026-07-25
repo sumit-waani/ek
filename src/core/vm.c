@@ -36,7 +36,12 @@ void eka_vm_init(eka_vm_t *vm) {
 }
 
 void eka_vm_free(eka_vm_t *vm) {
-    /* Free all GC arenas (this drops all objects allocated by this VM) */
+    /* First: free heap-allocated data arrays for lists/maps.
+     * These are malloc'd separately from the arena and must be freed
+     * before the arena memory (where the object headers live) is released. */
+    eka_obj_free_heap_data(vm);
+
+    /* Free all GC arenas (this drops all object headers allocated by this VM) */
     arena_t *a = vm->gc_arenas;
     while (a) {
         arena_t *next = a->next;
