@@ -4,6 +4,7 @@
 #include "core/vm.h"
 #include "core/obj.h"
 #include "builtins/builtins.h"
+#include "client/client_runtime.h"
 #include "eka.h"
 
 #include <pthread.h>
@@ -107,11 +108,160 @@ static char *build_response(const char *body, size_t body_len,
 }
 
 /* ================================================================
+ * Client runtime: virtual route /_eka.js
+ *
+ * Serves the embedded JS runtime with immutable caching.
+ * No worker VM needed — direct response from connection handler.
+ * ================================================================ */
+
+static bool is_eka_js_request(const char *path) {
+    /* Match exactly "/_eka.js" or "/_eka.js?v=X.Y.Z" */
+    if (strncmp(path, "/_eka.js", 8) != 0) return false;
+    return (path[8] == '\0' || path[8] == '?');
+}
+
+static void serve_eka_js(eka_conn_t *conn) {
+    char header[256];
+    int header_len = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/javascript; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Cache-Control: public, max-age=31536000, immutable\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        EKA_CLIENT_RUNTIME_LEN);
+
+    size_t total = (size_t)header_len + EKA_CLIENT_RUNTIME_LEN;
+    char *resp = malloc(total + 1);
+    if (!resp) {
+        const char *err = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+        size_t err_len = strlen(err);
+        conn->response_data = malloc(err_len + 1);
+        memcpy(conn->response_data, err, err_len + 1);
+        conn->response_len = err_len;
+        return;
+    }
+
+    memcpy(resp, header, (size_t)header_len);
+    memcpy(resp + header_len, EKA_CLIENT_RUNTIME, EKA_CLIENT_RUNTIME_LEN);
+    resp[total] = '\0';
+    conn->response_data = resp;
+    conn->response_len = total;
+}
+
+/* ================================================================
+ * Auto-injection: scan HTML for e-* attributes, inject <script>
+ *
+ * Called after building the response body for text/html responses.
+ * If the body contains any e-* attribute AND the response doesn't
+ * have X-Eka-Runtime: skip, inject the script tag into <head>.
+ * ================================================================ */
+
+/* Quick byte-scan: does the HTML body contain any "e-" attribute?
+ * Looks for the pattern: whitespace + "e-" + letter
+ * This is fast and avoids false positives from "e-" in text content. */
+static bool has_e_attributes(const char *html, size_t len) {
+    for (size_t i = 0; i + 2 < len; i++) {
+        /* Look for whitespace followed by "e-" followed by a letter */
+        if ((html[i] == ' ' || html[i] == '\n' || html[i] == '\t' || html[i] == '\r') &&
+            html[i + 1] == 'e' && html[i + 2] == '-') {
+            /* Check that next char after "e-" is a letter (valid attribute name) */
+            if (i + 3 < len && ((html[i + 3] >= 'a' && html[i + 3] <= 'z') ||
+                                (html[i + 3] >= 'A' && html[i + 3] <= 'Z'))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* Find the position of the closing '>' of <head ...>.
+ * Returns pointer to just after '>', or NULL if not found. */
+static const char *find_head_open(const char *html, size_t len) {
+    for (size_t i = 0; i + 5 < len; i++) {
+        if (html[i] == '<' &&
+            (html[i + 1] == 'h' || html[i + 1] == 'H') &&
+            (html[i + 2] == 'e' || html[i + 2] == 'E') &&
+            (html[i + 3] == 'a' || html[i + 3] == 'A') &&
+            (html[i + 4] == 'd' || html[i + 4] == 'D')) {
+            /* Check it's followed by whitespace, >, or / */
+            char next = html[i + 5];
+            if (next == ' ' || next == '>' || next == '/' ||
+                next == '\n' || next == '\t' || next == '\r') {
+                /* Find the closing > */
+                for (size_t j = i + 5; j < len; j++) {
+                    if (html[j] == '>') {
+                        return &html[j + 1];
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Inject the client runtime script tag into an HTML response body.
+ * Returns a new malloc'd buffer with the injected HTML, or NULL if no injection.
+ * Caller takes ownership of the returned buffer.
+ * Also updates *new_len. */
+static char *inject_runtime_script(const char *body, size_t body_len,
+                                    const char *content_type,
+                                    bool has_skip_header,
+                                    size_t *new_len) {
+    /* Only inject into text/html responses */
+    if (!content_type || !strstr(content_type, "text/html")) {
+        return NULL;
+    }
+
+    /* Opt-out header */
+    if (has_skip_header) {
+        return NULL;
+    }
+
+    /* Must contain e-* attributes */
+    if (!has_e_attributes(body, body_len)) {
+        return NULL;
+    }
+
+    /* Must have a <head> tag */
+    const char *head_insert = find_head_open(body, body_len);
+    if (!head_insert) {
+        return NULL;
+    }
+
+    /* Build the script tag */
+    const char *script_tag = "<script src=\"/_eka.js?v=" EKA_VERSION "\" defer></script>\n";
+    size_t tag_len = strlen(script_tag);
+
+    /* Insert position */
+    size_t insert_offset = (size_t)(head_insert - body);
+
+    /* Allocate new buffer */
+    char *new_body = malloc(body_len + tag_len + 1);
+    if (!new_body) return NULL;
+
+    /* Copy: before head + script tag + after head */
+    memcpy(new_body, body, insert_offset);
+    memcpy(new_body + insert_offset, script_tag, tag_len);
+    memcpy(new_body + insert_offset + tag_len, body + insert_offset, body_len - insert_offset);
+    new_body[body_len + tag_len] = '\0';
+
+    *new_len = body_len + tag_len;
+    return new_body;
+}
+
+/* ================================================================
  * Execute method and get response
  * ================================================================ */
 
 static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     eka_server_t *s = conn->server;
+
+    /* Virtual route: /_eka.js — serve embedded client runtime */
+    if (is_eka_js_request(req->path)) {
+        serve_eka_js(conn);
+        return;
+    }
 
     /* Find matching route */
     int midx = find_route(s->prog, req->method, req->path);
@@ -233,6 +383,29 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         body = json_s->data;
         body_len = json_s->length;
         content_type = "application/json";
+    }
+
+    /* Auto-inject client runtime script if e-* attributes found.
+     * Must happen after body is determined but before build_response.
+     * We need to check response headers for X-Eka-Runtime: skip. */
+    bool has_skip_header = false;
+    for (int hi = 0; hi < worker.response_state.header_count; hi++) {
+        if (strcasecmp(worker.response_state.extra_headers[hi].name, "X-Eka-Runtime") == 0 &&
+            strcasecmp(worker.response_state.extra_headers[hi].value, "skip") == 0) {
+            has_skip_header = true;
+            break;
+        }
+    }
+
+    size_t injected_len = 0;
+    char *injected_body = inject_runtime_script(body, body_len, content_type,
+                                                 has_skip_header, &injected_len);
+    if (injected_body) {
+        /* Use the injected body (takes precedence over original) */
+        if (owned_body) free(owned_body);
+        body = injected_body;
+        body_len = injected_len;
+        owned_body = injected_body;  /* so it gets freed below */
     }
 
     int resp_status = worker.response_state.status ? worker.response_state.status : 200;

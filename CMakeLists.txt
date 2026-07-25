@@ -56,6 +56,7 @@ set(EKA_SOURCES
     src/runtime/http.c
     src/runtime/server.c
     src/builtins/builtins.c
+    src/client/client_runtime.c
 )
 
 # -------------------------------------------------------------------
