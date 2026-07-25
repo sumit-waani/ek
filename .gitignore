@@ -1,0 +1,17 @@
+# Build
+build/
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts (created by eka at runtime)
+.eka/
+*.db
+*.db-wal
+*.db-shm

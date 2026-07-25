@@ -1,0 +1,5 @@
+add_executable(test_value test_value.c)
+target_include_directories(test_value PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(test_value PRIVATE -g -O0)
+target_link_libraries(test_value PRIVATE m)
+add_test(NAME value COMMAND test_value)
