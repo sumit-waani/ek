@@ -12,6 +12,14 @@
 void eka_vm_init(eka_vm_t *vm) {
     memset(vm, 0, sizeof(*vm));
     vm->globals = eka_map_new(32);
+    vm->cache_store = eka_map_new(64);
+    vm->response_state.status = 200;
+    vm->response_state.content_type_set = false;
+    vm->response_state.is_redirect = false;
+    vm->response_state.header_count = 0;
+    vm->response_state.body_set = false;
+    vm->response_state.body = NULL;
+    vm->response_state.body_len = 0;
 }
 
 void eka_vm_free(eka_vm_t *vm) {
@@ -334,7 +342,7 @@ eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
                 for (int i = 0; i < native_argc; i++) {
                     native_args[i] = frame->registers[b + 1 + i];
                 }
-                frame->registers[a] = nat->fn(native_argc, native_args);
+                frame->registers[a] = nat->fn(vm, nat->ctx, native_argc, native_args);
             } else {
                 set_error(error, "cannot call non-function");
                 return eka_nil();

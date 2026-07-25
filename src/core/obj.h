@@ -53,12 +53,16 @@ typedef struct {
     uint32_t    source_line;  /* line number in source (for debugging) */
 } eka_func_t;
 
+/* Forward declaration */
+typedef struct eka_vm_t eka_vm_t;
+
 /* --- Native function (C builtin) --- */
-typedef eka_value_t (*eka_native_fn_t)(int argc, eka_value_t *args);
+typedef eka_value_t (*eka_native_fn_t)(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args);
 
 typedef struct {
     eka_obj_t       header;
     eka_native_fn_t fn;
+    void           *ctx;
     const char     *name;
 } eka_native_t;
 
@@ -121,6 +125,7 @@ void        eka_map_set(eka_map_t *map, eka_string_t *key, eka_value_t value);
 eka_value_t eka_map_get(eka_map_t *map, eka_string_t *key);
 bool        eka_map_has(eka_map_t *map, eka_string_t *key);
 void        eka_map_delete(eka_map_t *map, eka_string_t *key);
+bool        eka_map_entry_is_tombstone(eka_string_t *key);
 
 /* --- Function --- */
 eka_func_t *eka_func_new(uint32_t arity, uint32_t max_arity,
@@ -131,7 +136,7 @@ eka_func_t *eka_func_new(uint32_t arity, uint32_t max_arity,
 eka_string_t *eka_value_to_string(eka_value_t v);
 
 /* --- Native --- */
-eka_native_t *eka_native_new(eka_native_fn_t fn, const char *name);
+eka_native_t *eka_native_new(eka_native_fn_t fn, void *ctx, const char *name);
 
 /* --- Closure --- */
 eka_closure_t *eka_closure_new(eka_func_t *func);

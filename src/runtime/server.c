@@ -3,6 +3,7 @@
 #include "runtime/http.h"
 #include "core/vm.h"
 #include "core/obj.h"
+#include "builtins/builtins.h"
 #include "eka.h"
 
 #include <pthread.h>
@@ -124,6 +125,9 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         return;
     }
 
+    /* Set up per-request builtins (request, response) */
+    eka_builtins_setup_request(s->vm, req);
+
     /* Execute the method's bytecode */
     eka_closure_t *cl = eka_closure_new(s->prog->methods[midx].func);
     const char *err = NULL;
@@ -134,45 +138,99 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         int len = snprintf(err_body, sizeof(err_body), "500 Internal Server Error: %s", err);
         conn->response_data = build_response(err_body, (size_t)len, 500,
                                               "text/plain", &conn->response_len);
+        eka_builtins_teardown_request(s->vm);
         return;
     }
 
-    /* Build response from result */
+    /* Handle redirect (read from VM before teardown) */
+    if (s->vm->response_state.is_redirect) {
+        char location_hdr[320];
+        int loc_len = snprintf(location_hdr, sizeof(location_hdr),
+                               "HTTP/1.1 %d Found\r\nLocation: %s\r\n"
+                               "Content-Length: 0\r\nConnection: close\r\n\r\n",
+                               s->vm->response_state.redirect_status,
+                               s->vm->response_state.redirect_location);
+        conn->response_data = malloc((size_t)loc_len + 1);
+        if (conn->response_data) {
+            memcpy(conn->response_data, location_hdr, (size_t)loc_len + 1);
+            conn->response_len = (size_t)loc_len;
+        }
+        eka_builtins_teardown_request(s->vm);
+        return;
+    }
+
+    /* Build response from result or explicit body.
+     * Must happen BEFORE teardown — body may point into VM-owned memory. */
     const char *body;
     size_t body_len;
     const char *content_type;
+    char *owned_body = NULL;  /* if we need to own a copy */
 
-    if (eka_obj_is_type(result, OBJ_STRING)) {
-        eka_string_t *s = eka_as_string(result);
-        body = s->data;
-        body_len = s->length;
-        content_type = "text/html; charset=utf-8";
+    if (s->vm->response_state.body_set) {
+        /* response.html/json was called — body is heap-allocated by builtins.
+         * Transfer ownership: we take it and will free it ourselves. */
+        body = s->vm->response_state.body;
+        body_len = s->vm->response_state.body_len;
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/html; charset=utf-8";
+        owned_body = s->vm->response_state.body;  /* take ownership */
+        s->vm->response_state.body = NULL;          /* prevent double-free */
+    } else if (eka_obj_is_type(result, OBJ_STRING)) {
+        eka_string_t *sres = eka_as_string(result);
+        body = sres->data;
+        body_len = sres->length;
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/html; charset=utf-8";
+    } else if (eka_obj_is_type(result, OBJ_RAWSTRING)) {
+        eka_rawstring_t *raw = eka_as_rawstring(result);
+        body = raw->data;
+        body_len = raw->length;
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/html; charset=utf-8";
     } else if (eka_is_number(result) || eka_is_int(result)) {
-        /* Convert number to string */
-        /* For simplicity, use a static buffer — not thread-safe but OK for V1 */
         static char num_buf[64];
         double d = eka_is_number(result) ? eka_as_number(result)
                                          : (double)eka_as_int(result);
         int n = snprintf(num_buf, sizeof(num_buf), "%g", d);
         body = num_buf;
         body_len = (size_t)n;
-        content_type = "text/plain";
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/plain";
     } else if (eka_is_bool(result)) {
         body = eka_as_bool(result) ? "true" : "false";
         body_len = eka_as_bool(result) ? 4 : 5;
-        content_type = "text/plain";
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/plain";
     } else if (eka_is_nil(result)) {
         body = "";
         body_len = 0;
-        content_type = "text/plain";
+        content_type = s->vm->response_state.content_type_set
+                       ? s->vm->response_state.content_type
+                       : "text/plain";
     } else {
-        body = "";
-        body_len = 0;
-        content_type = "text/plain";
+        /* Map or list — serialize as JSON */
+        eka_string_t *json_s = eka_value_to_string(result);
+        body = json_s->data;
+        body_len = json_s->length;
+        content_type = "application/json";
     }
 
-    conn->response_data = build_response(body, body_len, 200,
+    int resp_status = s->vm->response_state.status ? s->vm->response_state.status : 200;
+    conn->response_data = build_response(body, body_len, resp_status,
                                           content_type, &conn->response_len);
+
+    /* Teardown now (response already built) — this frees body if we didn't take ownership */
+    eka_builtins_teardown_request(s->vm);
+
+    /* If we took ownership of the body, free it after building the response */
+    if (owned_body) {
+        free(owned_body);
+    }
 }
 
 /* ================================================================
@@ -277,6 +335,10 @@ eka_server_t *eka_server_create(eka_compiled_program_t *prog,
     /* Create the init VM and execute init code */
     s->vm = arena_alloc(sizeof(eka_vm_t));
     eka_vm_init(s->vm);
+
+    /* Register builtins before running init code */
+    eka_builtins_register(s->vm);
+
     if (prog->init_func && prog->init_func->code_length > 0) {
         eka_closure_t *cl = eka_closure_new(prog->init_func);
         const char *err = NULL;

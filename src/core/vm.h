@@ -7,12 +7,23 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* Max call frames */
 #define EKA_MAX_CALL_FRAMES 256
 
 /* Max registers per frame */
 #define EKA_MAX_REGISTERS   256
+
+/* Max DB connections */
+#define EKA_MAX_DB_CONNS    8
+
+/* Max response headers set via response.header() */
+#define EKA_MAX_RESP_HEADERS 8
+
+/* Forward declarations */
+struct sqlite3;
+typedef struct eka_http_request_t eka_http_request_t;
 
 /* Call frame */
 typedef struct {
@@ -22,8 +33,34 @@ typedef struct {
     eka_value_t   *stack_top;    /* for passing args to next call */
 } eka_call_frame_t;
 
-/* VM state */
+/* Per-DB connection state */
 typedef struct {
+    struct sqlite3  *db;
+    int64_t          last_id;
+} eka_db_conn_t;
+
+/* Per-request response state (mutated by response.* builtins) */
+typedef struct {
+    int         status;
+    bool        is_redirect;
+    char        redirect_location[256];
+    int         redirect_status;
+    char        content_type[64];
+    bool        content_type_set;
+
+    struct {
+        char name[64];
+        char value[256];
+    } extra_headers[EKA_MAX_RESP_HEADERS];
+    int         header_count;
+
+    bool        body_set;
+    char       *body;          /* owned, arena-allocated pointer */
+    size_t      body_len;
+} eka_response_state_t;
+
+/* VM state */
+typedef struct eka_vm_t {
     eka_call_frame_t frames[EKA_MAX_CALL_FRAMES];
     int              frame_count;      /* current depth */
 
@@ -38,6 +75,17 @@ typedef struct {
 
     /* GC roots tracking */
     bool             gc_roots_dirty;
+
+    /* --- Per-request context --- */
+    eka_http_request_t   *current_req;
+    eka_response_state_t  response_state;
+
+    /* --- SQLite connections --- */
+    eka_db_conn_t    db_conns[EKA_MAX_DB_CONNS];
+    int              db_conn_count;
+
+    /* --- Cache --- */
+    eka_map_t       *cache_store;
 } eka_vm_t;
 
 /* --- VM lifecycle --- */

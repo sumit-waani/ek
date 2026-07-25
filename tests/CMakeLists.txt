@@ -46,3 +46,20 @@ target_include_directories(test_compiler PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_compiler PRIVATE -g -O0)
 target_link_libraries(test_compiler PRIVATE m)
 add_test(NAME compiler COMMAND test_compiler)
+
+# Builtins test — links all the real dependencies
+add_executable(test_builtins test_builtins.c
+    "${CMAKE_SOURCE_DIR}/src/core/obj.c"
+    "${CMAKE_SOURCE_DIR}/src/core/vm.c"
+    "${CMAKE_SOURCE_DIR}/src/builtins/builtins.c"
+    "${CMAKE_SOURCE_DIR}/src/runtime/http.c")
+target_include_directories(test_builtins PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(test_builtins PRIVATE -g -O0)
+target_link_libraries(test_builtins PRIVATE
+    yyjson
+    ${SQLITE3_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
+    ${CMARK_LIBRARIES}
+    m
+    pthread)
+add_test(NAME builtins COMMAND test_builtins)

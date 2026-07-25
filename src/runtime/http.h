@@ -8,7 +8,7 @@
  * Minimal HTTP/1.1 request parser.
  */
 
-typedef struct {
+typedef struct eka_http_request_t {
     const char *method;
     const char *path;
     const char *query;       /* everything after ? in path, or NULL */

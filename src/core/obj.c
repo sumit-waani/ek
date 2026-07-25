@@ -432,6 +432,10 @@ static void map_grow(eka_map_t *map) {
     (void)entries_size;
 }
 
+bool eka_map_entry_is_tombstone(eka_string_t *key) {
+    return key == TOMBSTONE;
+}
+
 /* ================================================================
  * Function, Native, Closure, Upvalue
  * ================================================================ */
@@ -467,9 +471,10 @@ eka_func_t *eka_func_new(uint32_t arity, uint32_t max_arity,
     return f;
 }
 
-eka_native_t *eka_native_new(eka_native_fn_t fn, const char *name) {
+eka_native_t *eka_native_new(eka_native_fn_t fn, void *ctx, const char *name) {
     eka_native_t *n = eka_obj_alloc(OBJ_NATIVE, sizeof(eka_native_t) - sizeof(eka_obj_t));
     n->fn   = fn;
+    n->ctx  = ctx;
     n->name = name;
     return n;
 }
