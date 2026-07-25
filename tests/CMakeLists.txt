@@ -60,6 +60,9 @@ target_link_libraries(test_builtins PRIVATE
     ${SQLITE3_LIBRARIES}
     ${OPENSSL_LIBRARIES}
     ${CMARK_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${PCRE2_LIBRARIES}
+    ${LIBUV_LIBRARIES}
     m
     pthread)
 add_test(NAME builtins COMMAND test_builtins)

@@ -11,7 +11,7 @@
 
 void eka_vm_init(eka_vm_t *vm) {
     memset(vm, 0, sizeof(*vm));
-    vm->globals = eka_map_new(32);
+    vm->globals = eka_map_new(64);
     vm->cache_store = eka_map_new(64);
     vm->response_state.status = 200;
     vm->response_state.content_type_set = false;

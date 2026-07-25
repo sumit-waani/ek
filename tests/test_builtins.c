@@ -577,6 +577,336 @@ static void test_sqlite_open(void) {
     PASS();
 }
 
+/* ================================================================
+ * Phase 2: math
+ * ================================================================ */
+
+static void test_math(void) {
+    TEST("math.floor / ceil / abs / min / max");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t math_obj = eka_vm_get_global(&vm, "math");
+
+    /* floor */
+    {
+        eka_value_t args[] = { eka_number(3.7) };
+        eka_value_t r = call_method(math_obj, "floor", &vm, args, 1);
+        CHECK(eka_is_number(r) && eka_as_number(r) == 3.0, "floor(3.7) = 3");
+    }
+    /* ceil */
+    {
+        eka_value_t args[] = { eka_number(3.2) };
+        eka_value_t r = call_method(math_obj, "ceil", &vm, args, 1);
+        CHECK(eka_is_number(r) && eka_as_number(r) == 4.0, "ceil(3.2) = 4");
+    }
+    /* abs */
+    {
+        eka_value_t args[] = { eka_int(-42) };
+        eka_value_t r = call_method(math_obj, "abs", &vm, args, 1);
+        CHECK(eka_is_int(r) && eka_as_int(r) == 42, "abs(-42) = 42");
+    }
+    /* min */
+    {
+        eka_value_t args[] = { eka_int(10), eka_int(3) };
+        eka_value_t r = call_method(math_obj, "min", &vm, args, 2);
+        CHECK(eka_is_number(r) && eka_as_number(r) == 3.0, "min(10,3) = 3");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: slug
+ * ================================================================ */
+
+static void test_slug(void) {
+    TEST("slug.make");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t slug_obj = eka_vm_get_global(&vm, "slug");
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("Hello World!", 12)) };
+        eka_value_t r = call_method(slug_obj, "make", &vm, args, 1);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "hello-world") == 0,
+              "slug.make('Hello World!') = 'hello-world'");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: base64
+ * ================================================================ */
+
+static void test_base64(void) {
+    TEST("base64.encode / decode");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t b64_obj = eka_vm_get_global(&vm, "base64");
+
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("hello", 5)) };
+        eka_value_t en = call_method(b64_obj, "encode", &vm, args, 1);
+        CHECK(eka_obj_is_type(en, OBJ_STRING), "encode returns string");
+
+        /* Decode it back */
+        eka_value_t args2[] = { en };
+        eka_value_t de = call_method(b64_obj, "decode", &vm, args2, 1);
+        CHECK(eka_obj_is_type(de, OBJ_STRING) &&
+              strcmp(eka_as_string(de)->data, "hello") == 0,
+              "base64 roundtrip: 'hello'");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: url
+ * ================================================================ */
+
+static void test_url(void) {
+    TEST("url.parse");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t url_obj = eka_vm_get_global(&vm, "url");
+    {
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("https://example.com/path?q=1", 30))
+        };
+        eka_value_t r = call_method(url_obj, "parse", &vm, args, 1);
+        CHECK(eka_obj_is_type(r, OBJ_MAP), "url.parse returns map");
+
+        eka_map_t *m = eka_as_map(r);
+        eka_value_t scheme = eka_map_get(m, eka_string_intern("scheme", 6));
+        CHECK(eka_obj_is_type(scheme, OBJ_STRING) &&
+              strcmp(eka_as_string(scheme)->data, "https") == 0,
+              "scheme = 'https'");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: validate
+ * ================================================================ */
+
+static void test_validate(void) {
+    TEST("validate.email / required");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t val_obj = eka_vm_get_global(&vm, "validate");
+
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("test@example.com", 16)) };
+        eka_value_t r = call_method(val_obj, "email", &vm, args, 1);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == true, "email test@example.com = true");
+    }
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("notanemail", 10)) };
+        eka_value_t r = call_method(val_obj, "email", &vm, args, 1);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == false, "email 'notanemail' = false");
+    }
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("hello", 5)) };
+        eka_value_t r = call_method(val_obj, "required", &vm, args, 1);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == true, "required('hello') = true");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: fs (exists)
+ * ================================================================ */
+
+static void test_fs(void) {
+    TEST("fs.exists / write / read");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t fs_obj = eka_vm_get_global(&vm, "fs");
+
+    /* Write a temp file then check it exists */
+    {
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("eka_fs_test_tmp.txt", 20)),
+            eka_string_val(eka_string_new("hello", 5)),
+        };
+        call_method(fs_obj, "write", &vm, args, 2);
+
+        eka_value_t args2[] = {
+            eka_string_val(eka_string_new("eka_fs_test_tmp.txt", 20)),
+        };
+        eka_value_t r = call_method(fs_obj, "exists", &vm, args2, 1);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == true, "test file exists");
+
+        /* Read it back */
+        eka_value_t r2 = call_method(fs_obj, "read", &vm, args2, 1);
+        CHECK(eka_obj_is_type(r2, OBJ_STRING) &&
+              strcmp(eka_as_string(r2)->data, "hello") == 0,
+              "fs.read returns written content");
+
+        /* Clean up */
+        call_method(fs_obj, "delete", &vm, args2, 1);
+
+        eka_value_t r3 = call_method(fs_obj, "exists", &vm, args2, 1);
+        CHECK(eka_is_bool(r3) && eka_as_bool(r3) == false, "deleted file = false");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: regex
+ * ================================================================ */
+
+static void test_regex(void) {
+    TEST("regex.test / match");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t regex_obj = eka_vm_get_global(&vm, "regex");
+
+    /* test */
+    {
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("^\\d+$", 5)),
+            eka_string_val(eka_string_new("12345", 5)),
+        };
+        eka_value_t r = call_method(regex_obj, "test", &vm, args, 2);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == true, "regex.test('^\\d+$', '12345') = true");
+    }
+    /* match */
+    {
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("^hello", 6)),
+            eka_string_val(eka_string_new("hello world", 11)),
+        };
+        eka_value_t r = call_method(regex_obj, "match", &vm, args, 2);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "hello") == 0,
+              "match '^hello' in 'hello world' = 'hello'");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: sitemap
+ * ================================================================ */
+
+static void test_sitemap(void) {
+    TEST("sitemap.generate");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t sm_obj = eka_vm_get_global(&vm, "sitemap");
+
+    eka_list_t *urls = eka_list_new(4);
+    eka_map_t *u = eka_map_new(4);
+    eka_map_set(u, eka_string_intern("url", 3), eka_string_val(eka_string_new("/", 1)));
+    eka_list_push(urls, eka_map_val(u));
+
+    eka_value_t args[] = { eka_list_val(urls) };
+    eka_value_t r = call_method(sm_obj, "generate", &vm, args, 1);
+
+    CHECK(eka_obj_is_type(r, OBJ_STRING), "sitemap.generate returns string");
+    CHECK(strstr(eka_as_string(r)->data, "<urlset") != NULL, "contains <urlset");
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: rss
+ * ================================================================ */
+
+static void test_rss(void) {
+    TEST("rss.generate");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t rss_obj = eka_vm_get_global(&vm, "rss");
+
+    eka_map_t *feed = eka_map_new(8);
+    eka_map_set(feed, eka_string_intern("title", 5),
+                eka_string_val(eka_string_new("Test", 4)));
+    eka_map_set(feed, eka_string_intern("link", 4),
+                eka_string_val(eka_string_new("http://example.com", 18)));
+    eka_map_set(feed, eka_string_intern("description", 11),
+                eka_string_val(eka_string_new("Desc", 4)));
+
+    eka_value_t args[] = { eka_map_val(feed) };
+    eka_value_t r = call_method(rss_obj, "generate", &vm, args, 1);
+
+    CHECK(eka_obj_is_type(r, OBJ_STRING), "rss.generate returns string");
+    CHECK(strstr(eka_as_string(r)->data, "<rss") != NULL, "contains <rss");
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: i18n
+ * ================================================================ */
+
+static void test_i18n(void) {
+    TEST("i18n.t interpolation");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t i18n_obj = eka_vm_get_global(&vm, "i18n");
+
+    /* Set lang */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("en", 2)) };
+        call_method(i18n_obj, "set", &vm, args, 1);
+    }
+
+    /* Translate with interpolation */
+    {
+        eka_map_t *vars = eka_map_new(4);
+        eka_map_set(vars, eka_string_intern("name", 4),
+                    eka_string_val(eka_string_new("Alice", 5)));
+
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("Hello, {{ name }}!", 18)),
+            eka_map_val(vars),
+        };
+        eka_value_t r = call_method(i18n_obj, "t", &vm, args, 2);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "Hello, Alice!") == 0,
+              "i18n.t interpolates {{ name }}");
+    }
+    PASS();
+}
+
+/* ================================================================
+ * Phase 2: session
+ * ================================================================ */
+
+static void test_session(void) {
+    TEST("session.csrf");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t sess_obj = eka_vm_get_global(&vm, "session");
+    {
+        eka_value_t args[1] = { eka_nil() };
+        eka_value_t r = call_method(sess_obj, "csrf", &vm, args, 0);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              eka_as_string(r)->length == 32,
+              "session.csrf returns 32-char hex string");
+    }
+    PASS();
+}
+
 int main(void) {
     printf("Builtins tests:\n");
 
@@ -598,6 +928,19 @@ int main(void) {
     test_request_builtin();
     test_response_builtin();
     test_sqlite_open();
+
+    /* Phase 2 */
+    test_math();
+    test_slug();
+    test_base64();
+    test_url();
+    test_validate();
+    test_fs();
+    test_regex();
+    test_sitemap();
+    test_rss();
+    test_i18n();
+    test_session();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

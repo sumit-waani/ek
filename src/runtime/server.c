@@ -128,6 +128,10 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     /* Set up per-request builtins (request, response) */
     eka_builtins_setup_request(s->vm, req);
 
+    /* Set SSE context: current client + event loop */
+    s->vm->current_client = &conn->client;
+    s->vm->sse_loop = s->loop;
+
     /* Execute the method's bytecode */
     eka_closure_t *cl = eka_closure_new(s->prog->methods[midx].func);
     const char *err = NULL;
@@ -246,7 +250,18 @@ static void on_close(uv_handle_t *handle) {
 static void on_write(uv_write_t *req, int status) {
     eka_conn_t *conn = (eka_conn_t *)req->data;
     (void)status;
-    /* Close the connection — on_close will free */
+
+    /* SSE connections stay alive — detect by content type */
+    if (conn->response_data) {
+        /* Check if this is an SSE response (text/event-stream) */
+        if (strstr(conn->response_data, "text/event-stream") != NULL) {
+            /* SSE: don't close, keep connection alive for streaming */
+            free(req);  /* free the uv_write_t, not the connection */
+            return;
+        }
+    }
+
+    /* Normal HTTP: close the connection */
     uv_close((uv_handle_t *)&conn->client, on_close);
 }
 

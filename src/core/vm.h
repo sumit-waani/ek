@@ -24,6 +24,7 @@
 /* Forward declarations */
 struct sqlite3;
 typedef struct eka_http_request_t eka_http_request_t;
+typedef struct uv_tcp_s         uv_tcp_t;
 
 /* Call frame */
 typedef struct {
@@ -86,6 +87,17 @@ typedef struct eka_vm_t {
 
     /* --- Cache --- */
     eka_map_t       *cache_store;
+
+    /* --- SSE connections --- */
+    #define EKA_MAX_SSE_CONNS 128
+    void           *sse_clients[EKA_MAX_SSE_CONNS];  /* uv_tcp_t* */
+    int             sse_client_count;
+    void           *sse_loop;                         /* uv_loop_t*, for sse.send */
+    void           *current_client;                   /* uv_tcp_t*, set per-request */
+    int             sse_current_idx;                  /* index in sse_clients, or -1 */
+
+    /* --- Session store (SQLite) --- */
+    void           *session_db;                       /* sqlite3* */
 } eka_vm_t;
 
 /* --- VM lifecycle --- */
