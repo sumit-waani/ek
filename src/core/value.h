@@ -88,8 +88,11 @@ static inline bool eka_is_true(eka_value_t v)   { return v == EKA_TRUE_V; }
 static inline bool eka_is_false(eka_value_t v)  { return v == EKA_FALSE_V; }
 
 static inline bool eka_is_obj(eka_value_t v) {
-    /* Tagged, bit 0 = 0, not nil (payload ≠ 0). */
-    return ((v >> 48) == 0x7FF9) && ((v & 1) == 0) && (v != EKA_NIL_V);
+    /* Tagged, bit 0 = 0, not nil, not false, not true. */
+    return ((v >> 48) == 0x7FF9) && ((v & 1) == 0)
+           && (v != EKA_NIL_V)
+           && (v != EKA_FALSE_V)
+           && (v != EKA_TRUE_V);
 }
 
 static inline bool eka_is_int(eka_value_t v) {

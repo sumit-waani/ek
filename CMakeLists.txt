@@ -51,6 +51,8 @@ set(EKA_SOURCES
     src/lexer/lexer.c
     src/parser/ast.c
     src/parser/parser.c
+    src/compiler/symtab.c
+    src/compiler/compiler.c
 )
 
 # -------------------------------------------------------------------
