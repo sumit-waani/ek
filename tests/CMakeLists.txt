@@ -21,3 +21,14 @@ target_include_directories(test_lexer PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_lexer PRIVATE -g -O0)
 target_link_libraries(test_lexer PRIVATE m)
 add_test(NAME lexer COMMAND test_lexer)
+
+add_executable(test_parser test_parser.c
+    "${CMAKE_SOURCE_DIR}/src/lexer/token.c"
+    "${CMAKE_SOURCE_DIR}/src/lexer/lexer.c"
+    "${CMAKE_SOURCE_DIR}/src/parser/ast.c"
+    "${CMAKE_SOURCE_DIR}/src/parser/parser.c"
+    "${CMAKE_SOURCE_DIR}/src/core/obj.c")
+target_include_directories(test_parser PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(test_parser PRIVATE -g -O0)
+target_link_libraries(test_parser PRIVATE m)
+add_test(NAME parser COMMAND test_parser)

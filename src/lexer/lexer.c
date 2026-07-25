@@ -297,8 +297,11 @@ static eka_token_t lex_code_token(eka_lexer_t *lexer) {
          * But in CODE mode, { is a map literal start. */
         return make_token(lexer, TOKEN_LBRACE);
     case '}':
-        /* Check for }} (expression end) — valid in any mode */
-        if (match(lexer, '}')) return make_token(lexer, TOKEN_EXPR_END);
+        /* Check for }} (expression end) — auto-switch to TEMPLATE */
+        if (match(lexer, '}')) {
+            lexer->mode = LEX_MODE_TEMPLATE;
+            return make_token(lexer, TOKEN_EXPR_END);
+        }
         return make_token(lexer, TOKEN_RBRACE);
 
     case '-': return make_token(lexer, TOKEN_MINUS);
@@ -405,27 +408,16 @@ static eka_token_t lex_at_keyword(eka_lexer_t *lexer) {
 }
 
 static eka_token_t lex_template_expr(eka_lexer_t *lexer) {
-    /* We've seen {{ — emit EXPR_START, then everything until }} as CODE tokens.
-     * But that's complex. Simpler: emit TOKEN_EXPR_START. The parser handles
-     * mode switching for the expression content.
-     *
-     * Actually, the lexer emits TOKEN_EXPR_START, then the parser switches to
-     * CODE mode and pulls tokens until it sees TOKEN_EXPR_END or TOKEN_AT_END
-     * or a newline (in case of unterminated {{).
-     *
-     * We need to handle the case where the lexer stays in TEMPLATE mode but
-     * needs to produce code tokens between {{ and }}. The simplest approach:
-     * switch to CODE mode temporarily and let the parser switch back.
-     *
-     * For V1: let the parser handle the mode switch. Here we just emit
-     * TOKEN_EXPR_START.
-     */
     advance(lexer); advance(lexer);  /* skip {{ */
+    /* Auto-switch to CODE mode for the expression content */
+    lexer->mode = LEX_MODE_CODE;
     return make_token(lexer, TOKEN_EXPR_START);
 }
 
 static eka_token_t lex_template_expr_end(eka_lexer_t *lexer) {
     advance(lexer); advance(lexer);  /* skip }} */
+    /* Auto-switch back to TEMPLATE mode */
+    lexer->mode = LEX_MODE_TEMPLATE;
     return make_token(lexer, TOKEN_EXPR_END);
 }
 
@@ -468,22 +460,36 @@ eka_token_t eka_lexer_next(eka_lexer_t *lexer) {
         /* {{ */
         if (peek(lexer) == '{' && peek_next(lexer) == '{') {
             lexer->current_token = lex_template_expr(lexer);
+            /* lex_template_expr already switches to CODE mode */
             return lexer->current_token;
         }
 
         /* }} */
         if (peek(lexer) == '}' && peek_next(lexer) == '}') {
             lexer->current_token = lex_template_expr_end(lexer);
+            /* lex_template_expr_end already switches to TEMPLATE mode */
             return lexer->current_token;
         }
 
         /* @keyword */
         if (peek(lexer) == '@') {
-            /* Check if it's really a keyword */
             const char *after_at = lexer->current + 1;
             while (*after_at == ' ' || *after_at == '\t') after_at++;
             if (isalpha((unsigned char)*after_at) || *after_at == '_') {
                 lexer->current_token = lex_at_keyword(lexer);
+                /* Auto-switch to CODE mode for @if, @for, @do (need to parse
+                 * condition/expression before the template body).
+                 * @end and @else stay in TEMPLATE mode. */
+                switch (lexer->current_token.type) {
+                case TOKEN_AT_IF:
+                case TOKEN_AT_FOR:
+                case TOKEN_AT_DO:
+                case TOKEN_AT_CSRF:
+                    lexer->mode = LEX_MODE_CODE;
+                    break;
+                default:
+                    break;
+                }
                 return lexer->current_token;
             }
             /* @ not followed by word — fall through to text accumulation */

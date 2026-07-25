@@ -49,6 +49,8 @@ set(EKA_SOURCES
     src/core/vm.c
     src/lexer/token.c
     src/lexer/lexer.c
+    src/parser/ast.c
+    src/parser/parser.c
 )
 
 # -------------------------------------------------------------------
