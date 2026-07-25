@@ -107,6 +107,10 @@ typedef struct eka_vm_t {
 
     /* --- Session store (SQLite) --- */
     void           *session_db;                       /* sqlite3* */
+    eka_map_t      *session_data;                     /* in-memory session map, loaded per-request */
+    char            session_id[33];                   /* 32-char hex + null */
+    bool            session_dirty;                    /* true if session was modified */
+    bool            session_is_new;                   /* true if no cookie was sent */
 
     /* --- GC state (per-VM arenas) --- */
     arena_t        *gc_arenas;          /* linked list of all arenas */

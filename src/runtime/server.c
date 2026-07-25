@@ -74,6 +74,7 @@ static int find_route(eka_compiled_program_t *prog, const char *method,
 
 static char *build_response(const char *body, size_t body_len,
                             int status, const char *content_type,
+                            const char *extra_headers,
                             size_t *out_len) {
     const char *status_text;
     switch (status) {
@@ -86,14 +87,26 @@ static char *build_response(const char *body, size_t body_len,
     }
 
     /* Build HTTP response */
-    char header[512];
-    int header_len = snprintf(header, sizeof(header),
-        "HTTP/1.1 %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        status_text, content_type, body_len);
+    char header[1024];
+    int header_len;
+    if (extra_headers && extra_headers[0]) {
+        header_len = snprintf(header, sizeof(header),
+            "HTTP/1.1 %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %zu\r\n"
+            "Connection: close\r\n"
+            "%s"
+            "\r\n",
+            status_text, content_type, body_len, extra_headers);
+    } else {
+        header_len = snprintf(header, sizeof(header),
+            "HTTP/1.1 %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %zu\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            status_text, content_type, body_len);
+    }
 
     size_t total = (size_t)header_len + body_len;
     char *resp = malloc(total + 1);
@@ -251,6 +264,40 @@ static char *inject_runtime_script(const char *body, size_t body_len,
 }
 
 /* ================================================================
+ * Cookie parsing — extract eka_session value from Cookie header
+ * ================================================================ */
+
+static void parse_session_cookie(eka_vm_t *vm, const eka_http_request_t *req) {
+    vm->session_id[0] = '\0';
+
+    const char *cookie = eka_http_get_header(req, "Cookie");
+    if (!cookie) return;
+
+    /* Look for "eka_session=" in the cookie string */
+    const char *p = cookie;
+    while (*p) {
+        /* Skip whitespace */
+        while (*p == ' ' || *p == '\t') p++;
+
+        /* Check for eka_session= */
+        if (strncmp(p, "eka_session=", 12) == 0) {
+            p += 12;
+            /* Read the value until ; or end */
+            int i = 0;
+            while (*p && *p != ';' && *p != ' ' && i < 32) {
+                vm->session_id[i++] = *p++;
+            }
+            vm->session_id[i] = '\0';
+            return;
+        }
+
+        /* Advance to next cookie (; separator) */
+        while (*p && *p != ';') p++;
+        if (*p == ';') p++;
+    }
+}
+
+/* ================================================================
  * Execute method and get response
  * ================================================================ */
 
@@ -271,7 +318,7 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         /* TODO: static file serving */
         const char *body = "404 Not Found";
         conn->response_data = build_response(body, strlen(body), 404,
-                                              "text/plain", &conn->response_len);
+                                              "text/plain", NULL, &conn->response_len);
         return;
     }
 
@@ -287,6 +334,10 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     /* Set up per-request builtins (request, response) */
     eka_builtins_setup_request(&worker, req);
 
+    /* Load session from cookie + SQLite */
+    parse_session_cookie(&worker, req);
+    eka_session_load(&worker);
+
     /* Set SSE context: current client + event loop */
     worker.current_client = &conn->client;
     worker.sse_loop = s->loop;
@@ -300,20 +351,41 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
         char err_body[256];
         int len = snprintf(err_body, sizeof(err_body), "500 Internal Server Error: %s", err);
         conn->response_data = build_response(err_body, (size_t)len, 500,
-                                              "text/plain", &conn->response_len);
+                                              "text/plain", NULL, &conn->response_len);
         eka_builtins_teardown_request(&worker);
         eka_vm_free(&worker);
         return;
     }
 
+    /* Save session back to SQLite (generates session_id for new sessions) */
+    eka_session_save(&worker);
+
     /* Handle redirect (read from worker VM before teardown) */
     if (worker.response_state.is_redirect) {
-        char location_hdr[320];
-        int loc_len = snprintf(location_hdr, sizeof(location_hdr),
-                               "HTTP/1.1 %d Found\r\nLocation: %s\r\n"
+        /* Build redirect response with optional Set-Cookie */
+        const char *status_text = "302 Found";
+        if (worker.response_state.redirect_status == 301)
+            status_text = "301 Moved Permanently";
+
+        char location_hdr[512];
+        int loc_len;
+        if (worker.session_dirty || worker.session_is_new) {
+            /* Include Set-Cookie for session */
+            loc_len = snprintf(location_hdr, sizeof(location_hdr),
+                               "HTTP/1.1 %s\r\nLocation: %s\r\n"
+                               "Set-Cookie: eka_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d\r\n"
                                "Content-Length: 0\r\nConnection: close\r\n\r\n",
-                               worker.response_state.redirect_status,
+                               status_text,
+                               worker.response_state.redirect_location,
+                               worker.session_id,
+                               EKA_SESSION_TTL);
+        } else {
+            loc_len = snprintf(location_hdr, sizeof(location_hdr),
+                               "HTTP/1.1 %s\r\nLocation: %s\r\n"
+                               "Content-Length: 0\r\nConnection: close\r\n\r\n",
+                               status_text,
                                worker.response_state.redirect_location);
+        }
         conn->response_data = malloc((size_t)loc_len + 1);
         if (conn->response_data) {
             memcpy(conn->response_data, location_hdr, (size_t)loc_len + 1);
@@ -409,8 +481,19 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     }
 
     int resp_status = worker.response_state.status ? worker.response_state.status : 200;
+
+    /* Build Set-Cookie header if session was created or modified */
+    char session_cookie_hdr[256] = "";
+    if (worker.session_dirty || worker.session_is_new) {
+        snprintf(session_cookie_hdr, sizeof(session_cookie_hdr),
+                 "Set-Cookie: eka_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d\r\n",
+                 worker.session_id, EKA_SESSION_TTL);
+    }
+
     conn->response_data = build_response(body, body_len, resp_status,
-                                          content_type, &conn->response_len);
+                                          content_type,
+                                          session_cookie_hdr[0] ? session_cookie_hdr : NULL,
+                                          &conn->response_len);
 
     /* Teardown now (response already built) — this frees body if we didn't take ownership */
     eka_builtins_teardown_request(&worker);
@@ -541,6 +624,9 @@ eka_server_t *eka_server_create(eka_compiled_program_t *prog,
 
     /* Register builtins before running init code */
     eka_builtins_register(s->vm);
+
+    /* Initialize session database (creates table if needed) */
+    eka_session_init_db(s->vm);
 
     if (prog->init_func && prog->init_func->code_length > 0) {
         eka_closure_t *cl = eka_closure_new(prog->init_func);

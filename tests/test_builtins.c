@@ -887,23 +887,168 @@ static void test_i18n(void) {
 }
 
 /* ================================================================
- * Phase 2: session
+ * Phase 2: session — full lifecycle
  * ================================================================ */
 
 static void test_session(void) {
-    TEST("session.csrf");
+    TEST("session full lifecycle");
     eka_vm_t vm;
     eka_vm_init(&vm);
     eka_builtins_register(&vm);
 
+    /* Initialize session DB */
+    eka_session_init_db(&vm);
+
     eka_value_t sess_obj = eka_vm_get_global(&vm, "session");
+
+    /* --- Test 1: session.set + session.get --- */
     {
-        eka_value_t args[1] = { eka_nil() };
-        eka_value_t r = call_method(sess_obj, "csrf", &vm, args, 0);
+        /* Load empty session (no cookie → new session) */
+        vm.session_id[0] = '\0';
+        eka_session_load(&vm);
+        CHECK(vm.session_is_new, "new session without cookie");
+
+        /* Set a value */
+        eka_value_t set_args[] = {
+            eka_string_val(eka_string_new("user", 4)),
+            eka_string_val(eka_string_new("alice", 5)),
+        };
+        call_method(sess_obj, "set", &vm, set_args, 2);
+
+        /* Get it back */
+        eka_value_t get_args[] = { eka_string_val(eka_string_new("user", 4)) };
+        eka_value_t r = call_method(sess_obj, "get", &vm, get_args, 1);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "alice") == 0,
+              "session.get returns set value");
+
+        CHECK(vm.session_dirty, "session is dirty after set");
+    }
+
+    /* --- Test 2: session.get with default value --- */
+    {
+        eka_value_t get_args[] = {
+            eka_string_val(eka_string_new("nonexistent", 11)),
+            eka_string_val(eka_string_new("fallback", 8)),
+        };
+        eka_value_t r = call_method(sess_obj, "get", &vm, get_args, 2);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "fallback") == 0,
+              "session.get returns default for missing key");
+    }
+
+    /* --- Test 3: session.delete --- */
+    {
+        eka_value_t del_args[] = { eka_string_val(eka_string_new("user", 4)) };
+        call_method(sess_obj, "delete", &vm, del_args, 1);
+
+        eka_value_t get_args[] = { eka_string_val(eka_string_new("user", 4)) };
+        eka_value_t r = call_method(sess_obj, "get", &vm, get_args, 1);
+        CHECK(eka_is_nil(r), "session.get after delete = nil");
+    }
+
+    /* --- Test 4: session.clear --- */
+    {
+        /* Set some values first */
+        eka_value_t set_args1[] = {
+            eka_string_val(eka_string_new("a", 1)),
+            eka_int(1),
+        };
+        eka_value_t set_args2[] = {
+            eka_string_val(eka_string_new("b", 1)),
+            eka_int(2),
+        };
+        call_method(sess_obj, "set", &vm, set_args1, 2);
+        call_method(sess_obj, "set", &vm, set_args2, 2);
+
+        /* Clear */
+        call_method(sess_obj, "clear", &vm, NULL, 0);
+
+        /* Both should be gone */
+        eka_value_t get_a[] = { eka_string_val(eka_string_new("a", 1)) };
+        CHECK(eka_is_nil(call_method(sess_obj, "get", &vm, get_a, 1)),
+              "session.get after clear = nil (key 'a')");
+
+        CHECK(vm.session_id[0] == '\0', "session_id cleared after clear");
+    }
+
+    /* --- Test 5: persistence — save and reload --- */
+    {
+        /* Load a fresh session and set data */
+        vm.session_id[0] = '\0';
+        vm.session_dirty = false;
+        vm.session_is_new = true;
+        eka_session_load(&vm);
+
+        eka_value_t set_args[] = {
+            eka_string_val(eka_string_new("color", 5)),
+            eka_string_val(eka_string_new("blue", 4)),
+        };
+        call_method(sess_obj, "set", &vm, set_args, 2);
+
+        /* Save to SQLite */
+        eka_session_save(&vm);
+        CHECK(vm.session_id[0] != '\0', "session_id generated after save");
+
+        /* Now reload with the same session_id */
+        char saved_id[33];
+        memcpy(saved_id, vm.session_id, 33);
+
+        eka_vm_t vm2;
+        eka_vm_init(&vm2);
+        eka_builtins_register(&vm2);
+        vm2.session_db = vm.session_db;  /* share the DB connection */
+        memcpy(vm2.session_id, saved_id, 33);
+        eka_session_load(&vm2);
+
+        CHECK(!vm2.session_is_new, "reloaded session is not new");
+
+        eka_value_t get_args[] = { eka_string_val(eka_string_new("color", 5)) };
+        eka_value_t r = call_method(
+            eka_vm_get_global(&vm2, "session"), "get", &vm2, get_args, 1);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "blue") == 0,
+              "session data persists across save/load");
+
+        eka_vm_free(&vm2);
+    }
+
+    /* --- Test 6: csrf token generation --- */
+    {
+        eka_value_t r = call_method(sess_obj, "csrf", &vm, NULL, 0);
         CHECK(eka_obj_is_type(r, OBJ_STRING) &&
               eka_as_string(r)->length == 32,
               "session.csrf returns 32-char hex string");
     }
+
+    /* --- Test 7: non-string values (int, bool) --- */
+    {
+        vm.session_id[0] = '\0';
+        vm.session_dirty = false;
+        vm.session_is_new = true;
+        eka_session_load(&vm);
+
+        eka_value_t set_int[] = { eka_string_val(eka_string_new("count", 5)), eka_int(42) };
+        eka_value_t set_bool[] = { eka_string_val(eka_string_new("active", 6)), eka_bool(true) };
+        call_method(sess_obj, "set", &vm, set_int, 2);
+        call_method(sess_obj, "set", &vm, set_bool, 2);
+
+        eka_value_t get_count[] = { eka_string_val(eka_string_new("count", 5)) };
+        eka_value_t r1 = call_method(sess_obj, "get", &vm, get_count, 1);
+        CHECK(eka_is_int(r1) && eka_as_int(r1) == 42,
+              "session stores and retrieves int values");
+
+        eka_value_t get_active[] = { eka_string_val(eka_string_new("active", 6)) };
+        eka_value_t r2 = call_method(sess_obj, "get", &vm, get_active, 1);
+        CHECK(eka_is_bool(r2) && eka_as_bool(r2) == true,
+              "session stores and retrieves bool values");
+    }
+
+    /* Clean up: remove test DB */
+    remove("eka_sessions.db");
+    remove("eka_sessions.db-wal");
+    remove("eka_sessions.db-shm");
+
     PASS();
 }
 

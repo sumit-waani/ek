@@ -1603,38 +1603,285 @@ static eka_value_t url_build(eka_vm_t *vm, void *ctx, int argc, eka_value_t *arg
 
 /* ================================================================
  * 16. session — cookie-based sessions (SQLite backend)
+ *
+ * Lifecycle:
+ *   1. Server parses Cookie header → extracts eka_session=<id>
+ *   2. Server loads session from SQLite into vm->session_data (map)
+ *   3. Route handler calls session.get/set/delete/clear (mutate map)
+ *   4. Server saves vm->session_data back to SQLite if dirty
+ *   5. Server sets Set-Cookie header if session is new or dirty
+ *
+ * The builtins below operate on vm->session_data (in-memory map).
+ * They set vm->session_dirty = true on mutations.
  * ================================================================ */
 
+/* Initialize session DB — creates the eka_sessions table if it doesn't exist.
+ * Called once at server startup. Returns the sqlite3* handle. */
+void eka_session_init_db(eka_vm_t *vm) {
+    if (vm->session_db) return;
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open("eka_sessions.db", &db);
+    if (rc != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return;
+    }
+
+    /* WAL mode for concurrency */
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+
+    /* Create table */
+    const char *sql =
+        "CREATE TABLE IF NOT EXISTS eka_sessions ("
+        "  session_id TEXT PRIMARY KEY,"
+        "  data TEXT NOT NULL DEFAULT '{}',"
+        "  created_at INTEGER NOT NULL,"
+        "  expires_at INTEGER NOT NULL"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_eka_sessions_expires "
+        "ON eka_sessions(expires_at);";
+    char *err = NULL;
+    rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+
+    vm->session_db = db;
+}
+
+/* Load session data from SQLite into vm->session_data.
+ * If session_id is empty or not found, creates an empty map.
+ * Sets vm->session_is_new if no existing session found. */
+void eka_session_load(eka_vm_t *vm) {
+    vm->session_data = eka_map_new(8);
+    vm->session_dirty = false;
+    vm->session_is_new = true;
+
+    if (vm->session_id[0] == '\0') return;
+
+    eka_session_init_db(vm);
+    sqlite3 *db = (sqlite3 *)vm->session_db;
+    if (!db) return;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT data FROM eka_sessions WHERE session_id = ? AND expires_at > ?",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        return;
+    }
+
+    int64_t now = (int64_t)time(NULL);
+    sqlite3_bind_text(stmt, 1, vm->session_id, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, now);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *json_str = (const char *)sqlite3_column_text(stmt, 0);
+        int json_len = sqlite3_column_bytes(stmt, 0);
+
+        /* Parse JSON into the session map */
+        yyjson_doc *doc = yyjson_read_opts((char *)json_str, (size_t)json_len, 0, NULL, NULL);
+        if (doc) {
+            yyjson_val *root = yyjson_doc_get_root(doc);
+            if (yyjson_get_type(root) == YYJSON_TYPE_OBJ) {
+                yyjson_val *key, *val;
+                yyjson_obj_iter iter;
+                yyjson_obj_iter_init(root, &iter);
+                while ((key = yyjson_obj_iter_next(&iter))) {
+                    val = yyjson_obj_iter_get_val(key);
+                    const char *kstr = yyjson_get_str(key);
+                    size_t klen = yyjson_get_len(key);
+                    eka_string_t *ekey = eka_string_intern(kstr, klen);
+
+                    /* Convert value — support string, int, number, bool, nil */
+                    eka_value_t eka_val;
+                    switch (yyjson_get_type(val)) {
+                    case YYJSON_TYPE_STR:
+                        eka_val = eka_string_val(eka_string_new(
+                            yyjson_get_str(val), yyjson_get_len(val)));
+                        break;
+                    case YYJSON_TYPE_NUM:
+                        if (yyjson_get_subtype(val) == YYJSON_SUBTYPE_UINT)
+                            eka_val = eka_int((int64_t)yyjson_get_uint(val));
+                        else {
+                            double d = yyjson_get_real(val);
+                            if (d == (double)(int64_t)d)
+                                eka_val = eka_int((int64_t)d);
+                            else
+                                eka_val = eka_number(d);
+                        }
+                        break;
+                    case YYJSON_TYPE_BOOL:
+                        eka_val = eka_bool(yyjson_get_bool(val));
+                        break;
+                    default:
+                        eka_val = eka_nil();
+                        break;
+                    }
+                    eka_map_set(vm->session_data, ekey, eka_val);
+                }
+                vm->session_is_new = false;
+            }
+            yyjson_doc_free(doc);
+        }
+    }
+
+    sqlite3_finalize(stmt);
+}
+
+/* Save vm->session_data to SQLite.
+ * Generates a new session_id if session_is_new. */
+void eka_session_save(eka_vm_t *vm) {
+    if (!vm->session_dirty && !vm->session_is_new) return;
+    if (!vm->session_data) return;
+
+    eka_session_init_db(vm);
+    sqlite3 *db = (sqlite3 *)vm->session_db;
+    if (!db) return;
+
+    /* Generate session ID for new sessions */
+    if (vm->session_id[0] == '\0') {
+        unsigned char buf[16];
+        RAND_bytes(buf, sizeof(buf));
+        for (int i = 0; i < 16; i++)
+            sprintf(vm->session_id + i * 2, "%02x", buf[i]);
+        vm->session_id[32] = '\0';
+    }
+
+    /* Serialize session map to JSON */
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *obj = yyjson_mut_obj(doc);
+    eka_map_t *map = vm->session_data;
+    for (uint32_t i = 0; i < map->capacity; i++) {
+        eka_map_entry_t *e = &map->entries[i];
+        if (e->key && !eka_map_entry_is_tombstone(e->key)) {
+            yyjson_mut_val *jval;
+            if (eka_is_nil(e->value)) {
+                jval = yyjson_mut_null(doc);
+            } else if (eka_is_bool(e->value)) {
+                jval = yyjson_mut_bool(doc, eka_as_bool(e->value));
+            } else if (eka_is_int(e->value)) {
+                jval = yyjson_mut_int(doc, eka_as_int(e->value));
+            } else if (eka_is_number(e->value)) {
+                jval = yyjson_mut_real(doc, eka_as_number(e->value));
+            } else if (eka_obj_is_type(e->value, OBJ_STRING)) {
+                eka_string_t *s = eka_as_string(e->value);
+                jval = yyjson_mut_strncpy(doc, s->data, s->length);
+            } else {
+                /* Skip non-primitive values (lists, maps, etc.) */
+                continue;
+            }
+            yyjson_mut_obj_add(obj,
+                yyjson_mut_strncpy(doc, e->key->data, e->key->length),
+                jval);
+        }
+    }
+    yyjson_mut_doc_set_root(doc, obj);
+
+    size_t json_len;
+    char *json_str = yyjson_mut_write(doc, 0, &json_len);
+
+    int64_t now = (int64_t)time(NULL);
+    int64_t expires = now + EKA_SESSION_TTL;
+
+    /* Upsert: INSERT OR REPLACE */
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO eka_sessions (session_id, data, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, vm->session_id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, json_str, (int)json_len, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 3, now);
+        sqlite3_bind_int64(stmt, 4, expires);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    if (json_str) free(json_str);
+    yyjson_mut_doc_free(doc);
+
+    /* Periodic cleanup: 1% chance to purge expired sessions */
+    if ((rand() % 100) == 0) {
+        char *err = NULL;
+        sqlite3_exec(db,
+            "DELETE FROM eka_sessions WHERE expires_at < strftime('%s','now')",
+            NULL, NULL, &err);
+        if (err) sqlite3_free(err);
+    }
+}
+
 static eka_value_t session_set(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)ctx; (void)argc; (void)args;
-    /* Session requires a session cookie to identify the user.
-     * In V1, session is a stub — it stores per-VM in-memory data. */
+    CHECK_ARGC(2);
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
+    if (!vm->session_data) return eka_nil();
+
+    eka_string_t *key = eka_as_string(args[0]);
+    eka_map_set(vm->session_data, key, args[1]);
+    vm->session_dirty = true;
     return eka_nil();
 }
 
 static eka_value_t session_get(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx; (void)argc; (void)args;
-    return eka_nil();
+    CHECK_ARGC(1);
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
+    if (!vm->session_data) return argc >= 2 ? args[1] : eka_nil();
+
+    eka_string_t *key = eka_as_string(args[0]);
+    eka_value_t val = eka_map_get(vm->session_data, key);
+    if (eka_is_nil(val) && argc >= 2) return args[1];
+    return val;
 }
 
 static eka_value_t session_delete(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx; (void)argc; (void)args;
+    CHECK_ARGC(1);
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
+    if (!vm->session_data) return eka_nil();
+
+    eka_string_t *key = eka_as_string(args[0]);
+    eka_map_delete(vm->session_data, key);
+    vm->session_dirty = true;
     return eka_nil();
 }
 
 static eka_value_t session_clear(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx; (void)argc; (void)args;
+    (void)argc; (void)args;
+
+    /* Delete the session row from SQLite */
+    if (vm->session_db && vm->session_id[0] != '\0') {
+        sqlite3 *db = (sqlite3 *)vm->session_db;
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db,
+                "DELETE FROM eka_sessions WHERE session_id = ?",
+                -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, vm->session_id, -1, SQLITE_STATIC);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    /* Reset in-memory state — replace with fresh empty map */
+    vm->session_data = eka_map_new(4);
+    vm->session_id[0] = '\0';
+    vm->session_dirty = false;
+    vm->session_is_new = true;
     return eka_nil();
 }
 
 static eka_value_t session_csrf(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx; (void)argc; (void)args;
-    /* Generate a CSRF token */
+    (void)ctx; (void)argc; (void)args;
+    /* Generate a CSRF token and store it in the session */
     unsigned char buf[16];
     RAND_bytes(buf, sizeof(buf));
     char hex[33];
     for (int i = 0; i < 16; i++) sprintf(hex + i*2, "%02x", buf[i]);
     hex[32] = '\0';
+
+    /* Store the token in the session for later verification */
+    if (vm->session_data) {
+        eka_string_t *key = eka_string_intern("_csrf", 5);
+        eka_map_set(vm->session_data, key,
+                    eka_string_val(eka_string_new(hex, 32)));
+        vm->session_dirty = true;
+    }
+
     return eka_string_val(eka_string_new(hex, 32));
 }
 
