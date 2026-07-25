@@ -81,7 +81,7 @@ let escaped = "Use \${name} for literal dollar-brace"
 - String indexing: `"hello"[0]` → `"h"`, `"hello"[-1]` → `"o"`. Returns single-character string, or `null` if out of bounds.
 - `.length` is a property (not a method): `"hello".length` → `5`.
 
-See [Builtins → str](#) for string manipulation functions.
+See [Builtins → str](BUILTINS.md#25-str) for string manipulation functions.
 
 ## Numbers
 

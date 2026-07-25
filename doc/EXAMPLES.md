@@ -38,10 +38,8 @@ Full CRUD with SQLite and client-side interactivity via `e-*` attributes.
 ```eka
 -- app.eka
 
-@do
-  let db = sqlite.open("app.db")
-  db.exec("CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, text TEXT, done INTEGER DEFAULT 0)")
-@end
+let db = sqlite.open("app.db")
+db.exec("CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, text TEXT, done INTEGER DEFAULT 0)")
 
 @get /
   <!DOCTYPE html>
@@ -143,10 +141,9 @@ Blog with SQLite, markdown parsing, and inline editing.
 ```eka
 -- app.eka
 
-@do
-  let db = sqlite.open("blog.db")
-  db.exec("CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, title TEXT, body TEXT, created_at TEXT)")
-@end
+let db = sqlite.open("blog.db")
+db.exec("CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, title TEXT, body TEXT, created_at TEXT)")
+let appName = "My Blog"
 
 @get /
   <!DOCTYPE html>
@@ -227,10 +224,8 @@ Multi-user chat with SSE for real-time updates.
 ```eka
 -- app.eka
 
-@do
-  let db = sqlite.open("chat.db")
-  db.exec("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, text TEXT, created_at TEXT)")
-@end
+let db = sqlite.open("chat.db")
+db.exec("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, text TEXT, created_at TEXT)")
 
 @get /
   <!DOCTYPE html>
@@ -307,9 +302,7 @@ Form validation, email sending, CSRF protection.
 ```eka
 -- app.eka
 
-@do
-  let appName = "My Site"
-@end
+let appName = "My Site"
 
 @get /
   <!DOCTYPE html>
@@ -380,15 +373,13 @@ Pure JSON API with no HTML — perfect for mobile app backends.
 ```eka
 -- app.eka
 
-@do
-  let db = sqlite.open("api.db")
-  db.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT, price NUMBER)")
-  -- Seed data
-  if db.query("SELECT COUNT(*) AS c FROM items")[0].c == 0
-    db.exec("INSERT INTO items (name, price) VALUES (?, ?)", ["Widget", 9.99])
-    db.exec("INSERT INTO items (name, price) VALUES (?, ?)", ["Gadget", 19.99])
-  end
-@end
+let db = sqlite.open("api.db")
+db.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT, price NUMBER)")
+-- Seed data
+if db.query("SELECT COUNT(*) AS c FROM items")[0].c == 0
+  db.exec("INSERT INTO items (name, price) VALUES (?, ?)", ["Widget", 9.99])
+  db.exec("INSERT INTO items (name, price) VALUES (?, ?)", ["Gadget", 19.99])
+end
 
 -- List all items
 @get /api/items
@@ -468,11 +459,9 @@ Simple passwordless or password-based auth using sessions.
 ```eka
 -- app.eka
 
-@do
-  let db = sqlite.open("app.db")
-  db.exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, password TEXT)")
-  let appName = "Members Area"
-@end
+let db = sqlite.open("app.db")
+db.exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, password TEXT)")
+let appName = "Members Area"
 
 func hashPassword(password)
   crypto.sha256(password)

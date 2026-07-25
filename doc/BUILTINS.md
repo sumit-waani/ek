@@ -18,7 +18,7 @@ print(someObject)  -- stringifies non-strings automatically
 
 ## 2. `request`
 
-HTTP request object. Available in every request handler. See [Routing → Request](#).
+HTTP request object. Available in every request handler. See [ROUTING.md](ROUTING.md).
 
 ```eka
 request.path                    -- "/user/42"
@@ -36,7 +36,7 @@ request.param("id")             -- Route parameter from [id]
 
 ## 3. `response`
 
-HTTP response control. Available in every request handler. See [Routing → Response](#).
+HTTP response control. Available in every request handler. See [ROUTING.md](ROUTING.md).
 
 ```eka
 response.status(404)                     -- Set status code
@@ -298,7 +298,7 @@ session.clear()                            -- remove all session data
 session.csrf()                             -- get or create CSRF token
 ```
 
-**CSRF protection** is semi-automatic. See [Routing → CSRF](#) for details.
+**CSRF protection** is semi-automatic. See [ROUTING.md](ROUTING.md#csrf-protection) for details.
 
 - Session IDs are 256-bit random values.
 - Session cookie: `HttpOnly`, `SameSite=Lax`, signed with `EKA_SECRET`.
@@ -406,7 +406,7 @@ Translation file format (`translations/i18n/en.json`):
 
 ## 22. `sse`
 
-Server-Sent Events. See [Architecture → SSE](#) for connection model.
+Server-Sent Events. See [ARCHITECTURE.md](ARCHITECTURE.md) for the connection model and [ROUTING.md](ROUTING.md#sse-server-sent-events) for usage.
 
 ```eka
 -- SSE endpoint: clients connect here
