@@ -4,6 +4,7 @@
 #include "compiler/compiler.h"
 #include "runtime/server.h"
 #include "fmt/fmt.h"
+#include "builtins/builtins.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,9 @@ int main(int argc, char **argv) {
         /* Read the .eka file */
         char *source = read_file(args.file);
         if (!source) return 2;
+
+        /* Set FS sandbox root to the directory of the .eka file */
+        eka_fs_set_project_root(args.file);
 
         /* Parse */
         eka_parser_t parser;

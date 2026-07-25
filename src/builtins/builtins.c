@@ -1273,30 +1273,154 @@ static eka_value_t http_patch_fn(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
  * 10. fs — sandboxed file system
  *
  *    fs.read / write / append / move / copy / exists / delete / mkdir / list
+ *
+ *    All paths are confined to the project root (directory of the .eka file).
+ *    Symlinks are resolved via realpath() — symlink escapes are blocked.
  * ================================================================ */
 
-/* Common path validation: reject .. traversal and absolute paths */
-static bool fs_path_valid(const char *path) {
-    if (!path) return false;
-    if (path[0] == '/') return false;  /* no absolute paths */
-    if (strstr(path, "..") != NULL) return false;
-    return true;
-}
+/* Project root — set once at startup via eka_fs_set_project_root() */
+static char fs_project_root[4096];
+static size_t fs_project_root_len;
 
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+/* Set the project root from the .eka file path.
+ * Extracts the directory, resolves to absolute path. */
+void eka_fs_set_project_root(const char *filepath) {
+    if (!filepath || !filepath[0]) {
+        /* Fallback: use current working directory */
+        if (getcwd(fs_project_root, sizeof(fs_project_root))) {
+            fs_project_root_len = strlen(fs_project_root);
+        }
+        return;
+    }
+
+    /* Extract directory from file path */
+    char dir[4096];
+    snprintf(dir, sizeof(dir), "%s", filepath);
+
+    /* Find last slash */
+    char *last_slash = strrchr(dir, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    } else {
+        /* No slash — file is in current directory */
+        strcpy(dir, ".");
+    }
+
+    /* Resolve to absolute path */
+    char resolved[4096];
+    if (realpath(dir, resolved)) {
+        snprintf(fs_project_root, sizeof(fs_project_root), "%s", resolved);
+        fs_project_root_len = strlen(fs_project_root);
+    } else {
+        /* If resolution fails, try CWD */
+        if (getcwd(fs_project_root, sizeof(fs_project_root))) {
+            fs_project_root_len = strlen(fs_project_root);
+        }
+    }
+}
+
+/* Resolve a user-supplied relative path against the project root.
+ * Returns a malloc'd absolute path on success, NULL if path is blocked.
+ *
+ * Resolution strategy:
+ * 1. Reject NULL, empty, absolute paths, and paths containing ".."
+ * 2. Join project_root + "/" + user_path
+ * 3. Try realpath() — works if path exists (resolves symlinks)
+ * 4. If path doesn't exist: realpath() the parent, append basename
+ * 5. Check resolved path starts with project_root
+ */
+static char *fs_resolve_path(const char *user_path) {
+    if (!user_path || !user_path[0]) return NULL;
+
+    /* Reject absolute paths */
+    if (user_path[0] == '/') return NULL;
+
+    /* Reject .. components — we check before resolution to block
+     * obvious traversal attempts early. Realpath handles the rest. */
+    if (strstr(user_path, "..") != NULL) return NULL;
+
+    /* If project root not set, allow paths as-is (test mode) */
+    if (fs_project_root_len == 0) {
+        char *dup = strdup(user_path);
+        return dup;
+    }
+
+    /* Build full path: project_root + "/" + user_path */
+    char full_path[PATH_MAX];
+    int n = snprintf(full_path, sizeof(full_path), "%s/%s",
+                     fs_project_root, user_path);
+    if (n < 0 || (size_t)n >= sizeof(full_path)) return NULL;
+
+    /* Try realpath — resolves symlinks, normalizes . and .. */
+    char resolved[PATH_MAX];
+    if (realpath(full_path, resolved)) {
+        /* Path exists and resolved — check confinement */
+        if (strncmp(resolved, fs_project_root, fs_project_root_len) != 0) {
+            return NULL;  /* escaped project root */
+        }
+        /* Must be exactly root or start with root + "/" */
+        if (resolved[fs_project_root_len] != '\0' &&
+            resolved[fs_project_root_len] != '/') {
+            return NULL;
+        }
+        return strdup(resolved);
+    }
+
+    /* Path doesn't exist yet (write target) — resolve parent directory */
+    char parent[PATH_MAX];
+    char fname[PATH_MAX];
+    snprintf(parent, sizeof(parent), "%s", full_path);
+
+    /* Split into parent dir + filename */
+    char *last_slash = strrchr(parent, '/');
+    if (!last_slash) return NULL;
+    *last_slash = '\0';
+    snprintf(fname, sizeof(fname), "%s", last_slash + 1);
+
+    /* Resolve parent */
+    char parent_resolved[PATH_MAX];
+    if (!realpath(parent, parent_resolved)) return NULL;
+
+    /* Check parent is within project root */
+    if (strncmp(parent_resolved, fs_project_root, fs_project_root_len) != 0) {
+        return NULL;
+    }
+    if (parent_resolved[fs_project_root_len] != '\0' &&
+        parent_resolved[fs_project_root_len] != '/') {
+        return NULL;
+    }
+
+    /* Build final path: resolved_parent + "/" + filename */
+    char *result = malloc(strlen(parent_resolved) + 1 + strlen(fname) + 1);
+    if (!result) return NULL;
+    sprintf(result, "%s/%s", parent_resolved, fname);
+    return result;
+}
+
+/* Free a resolved path (alias for free, for clarity) */
+static void fs_free_path(char *path) {
+    free(path);
+}
 
 static eka_value_t fs_read(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(1);
-    const char *path = arg_string(argc, args, 0, NULL);
+    const char *user_path = arg_string(argc, args, 0, NULL);
+    char *path = fs_resolve_path(user_path);
     if (!path) return eka_nil();
-    /* Sanity: reject paths with .. */
-    if (!fs_path_valid(path)) return eka_nil();
 
     FILE *f = fopen(path, "rb");
+    fs_free_path(path);
     if (!f) return eka_nil();
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -1313,10 +1437,12 @@ static eka_value_t fs_read(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args)
 static eka_value_t fs_write(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(2);
-    const char *path = arg_string(argc, args, 0, NULL);
+    const char *user_path = arg_string(argc, args, 0, NULL);
     const char *content = arg_string(argc, args, 1, "");
-    if (!path || !fs_path_valid(path)) return eka_nil();
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_nil();
     FILE *f = fopen(path, "wb");
+    fs_free_path(path);
     if (!f) return eka_nil();
     fwrite(content, 1, strlen(content), f);
     fclose(f);
@@ -1326,10 +1452,12 @@ static eka_value_t fs_write(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args
 static eka_value_t fs_append(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(2);
-    const char *path = arg_string(argc, args, 0, NULL);
+    const char *user_path = arg_string(argc, args, 0, NULL);
     const char *content = arg_string(argc, args, 1, "");
-    if (!path || !fs_path_valid(path)) return eka_nil();
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_nil();
     FILE *f = fopen(path, "ab");
+    fs_free_path(path);
     if (!f) return eka_nil();
     fwrite(content, 1, strlen(content), f);
     fclose(f);
@@ -1339,24 +1467,32 @@ static eka_value_t fs_append(eka_vm_t *vm, void *ctx, int argc, eka_value_t *arg
 static eka_value_t fs_move(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(2);
-    const char *from = arg_string(argc, args, 0, NULL);
-    const char *to = arg_string(argc, args, 1, NULL);
-    if (!from || !to || strstr(from, "..") || strstr(to, "..")) return eka_nil();
+    const char *from_user = arg_string(argc, args, 0, NULL);
+    const char *to_user = arg_string(argc, args, 1, NULL);
+    char *from = fs_resolve_path(from_user);
+    if (!from) return eka_nil();
+    char *to = fs_resolve_path(to_user);
+    if (!to) { fs_free_path(from); return eka_nil(); }
     rename(from, to);
+    fs_free_path(from);
+    fs_free_path(to);
     return eka_nil();
 }
 
 static eka_value_t fs_copy(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(2);
-    const char *from = arg_string(argc, args, 0, NULL);
-    const char *to = arg_string(argc, args, 1, NULL);
-    if (!from || !to || strstr(from, "..") || strstr(to, "..")) return eka_nil();
+    const char *from_user = arg_string(argc, args, 0, NULL);
+    const char *to_user = arg_string(argc, args, 1, NULL);
+    char *from = fs_resolve_path(from_user);
+    if (!from) return eka_nil();
+    char *to = fs_resolve_path(to_user);
+    if (!to) { fs_free_path(from); return eka_nil(); }
 
     FILE *src = fopen(from, "rb");
-    if (!src) return eka_nil();
+    if (!src) { fs_free_path(from); fs_free_path(to); return eka_nil(); }
     FILE *dst = fopen(to, "wb");
-    if (!dst) { fclose(src); return eka_nil(); }
+    if (!dst) { fclose(src); fs_free_path(from); fs_free_path(to); return eka_nil(); }
 
     char buf[8192];
     size_t n;
@@ -1364,42 +1500,52 @@ static eka_value_t fs_copy(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args)
         fwrite(buf, 1, n, dst);
     }
     fclose(src); fclose(dst);
+    fs_free_path(from);
+    fs_free_path(to);
     return eka_nil();
 }
 
 static eka_value_t fs_exists(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(1);
-    const char *path = arg_string(argc, args, 0, NULL);
-    if (!path || !fs_path_valid(path)) return eka_bool(false);
-    return eka_bool(access(path, F_OK) == 0);
+    const char *user_path = arg_string(argc, args, 0, NULL);
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_bool(false);
+    bool exists = (access(path, F_OK) == 0);
+    fs_free_path(path);
+    return eka_bool(exists);
 }
 
 static eka_value_t fs_delete(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(1);
-    const char *path = arg_string(argc, args, 0, NULL);
-    if (!path || !fs_path_valid(path)) return eka_nil();
+    const char *user_path = arg_string(argc, args, 0, NULL);
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_nil();
     unlink(path);
+    fs_free_path(path);
     return eka_nil();
 }
 
 static eka_value_t fs_mkdir(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
     CHECK_ARGC(1);
-    const char *path = arg_string(argc, args, 0, NULL);
-    if (!path || !fs_path_valid(path)) return eka_nil();
+    const char *user_path = arg_string(argc, args, 0, NULL);
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_nil();
     mkdir(path, 0755);
+    fs_free_path(path);
     return eka_nil();
 }
 
 static eka_value_t fs_list(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx;
-    const char *path = arg_string(argc, args, 0, ".");
-    if (!fs_path_valid(path)) return eka_list_val(eka_list_new(0));
+    const char *user_path = arg_string(argc, args, 0, ".");
+    char *path = fs_resolve_path(user_path);
+    if (!path) return eka_list_val(eka_list_new(0));
 
     DIR *d = opendir(path);
-    if (!d) return eka_list_val(eka_list_new(0));
+    if (!d) { fs_free_path(path); return eka_list_val(eka_list_new(0)); }
     eka_list_t *list = eka_list_new(16);
     struct dirent *ent;
     while ((ent = readdir(d))) {
@@ -1408,6 +1554,7 @@ static eka_value_t fs_list(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args)
         eka_list_push(list, eka_string_val(eka_string_new(ent->d_name, strlen(ent->d_name))));
     }
     closedir(d);
+    fs_free_path(path);
     return eka_list_val(list);
 }
 

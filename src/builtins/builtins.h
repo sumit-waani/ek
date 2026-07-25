@@ -6,6 +6,11 @@
 
 #define EKA_SESSION_TTL (7 * 24 * 3600)  /* 7 days in seconds */
 
+/* Set the FS sandbox project root from the .eka file path.
+ * All fs.* operations are confined to this directory.
+ * Call once at startup before serving requests. */
+void eka_fs_set_project_root(const char *filepath);
+
 /*
  * Eka builtins — the 12 Phase 1 builtin functions.
  *

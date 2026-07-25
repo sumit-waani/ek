@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 static int tests_run = 0;
 static int tests_failed = 0;
@@ -763,6 +765,149 @@ static void test_fs(void) {
 }
 
 /* ================================================================
+ * Test: fs sandbox — project-root confinement
+ * ================================================================ */
+
+static void test_fs_sandbox(void) {
+    TEST("fs sandbox confinement");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t fs_obj = eka_vm_get_global(&vm, "fs");
+
+    /* Set up a temp directory as project root */
+    const char *sandbox_dir = "eka_sandbox_test_dir";
+    mkdir(sandbox_dir, 0755);
+
+    /* Create a fake .eka file path to set the root */
+    char fake_eka_path[512];
+    snprintf(fake_eka_path, sizeof(fake_eka_path), "%s/app.eka", sandbox_dir);
+    FILE *f = fopen(fake_eka_path, "w");
+    if (f) fclose(f);
+
+    eka_fs_set_project_root(fake_eka_path);
+
+    /* --- Test 1: write + read within sandbox --- */
+    {
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("safe.txt", 8)),
+            eka_string_val(eka_string_new("sandboxed", 9)),
+        };
+        call_method(fs_obj, "write", &vm, args, 2);
+
+        eka_value_t args2[] = { eka_string_val(eka_string_new("safe.txt", 8)) };
+        eka_value_t r = call_method(fs_obj, "read", &vm, args2, 1);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "sandboxed") == 0,
+              "fs.read works within sandbox");
+    }
+
+    /* --- Test 2: absolute path rejected --- */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("/etc/passwd", 11)) };
+        eka_value_t r = call_method(fs_obj, "read", &vm, args, 1);
+        CHECK(eka_is_nil(r), "absolute path /etc/passwd rejected");
+    }
+
+    /* --- Test 3: dot-dot traversal rejected --- */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("../../etc/passwd", 17)) };
+        eka_value_t r = call_method(fs_obj, "read", &vm, args, 1);
+        CHECK(eka_is_nil(r), "dot-dot traversal rejected");
+    }
+
+    /* --- Test 4: symlink escape blocked --- */
+    {
+        /* Create a symlink pointing outside the sandbox */
+        char link_path[512];
+        snprintf(link_path, sizeof(link_path), "%s/escape_link", sandbox_dir);
+        unlink(link_path);  /* clean up any previous */
+        symlink("/etc/passwd", link_path);
+
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("escape_link", 11)),
+        };
+        eka_value_t r = call_method(fs_obj, "read", &vm, args, 1);
+        CHECK(eka_is_nil(r), "symlink to /etc/passwd blocked");
+
+        unlink(link_path);
+    }
+
+    /* --- Test 5: symlink to file within sandbox allowed --- */
+    {
+        char link_path[512];
+        snprintf(link_path, sizeof(link_path), "%s/internal_link", sandbox_dir);
+        unlink(link_path);
+
+        char target_path[512];
+        snprintf(target_path, sizeof(target_path), "safe.txt");
+        symlink(target_path, link_path);
+
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("internal_link", 13)),
+        };
+        eka_value_t r = call_method(fs_obj, "read", &vm, args, 1);
+        CHECK(eka_obj_is_type(r, OBJ_STRING) &&
+              strcmp(eka_as_string(r)->data, "sandboxed") == 0,
+              "symlink within sandbox allowed");
+
+        unlink(link_path);
+    }
+
+    /* --- Test 6: exists with absolute path rejected --- */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("/etc/hostname", 13)) };
+        eka_value_t r = call_method(fs_obj, "exists", &vm, args, 1);
+        CHECK(eka_is_bool(r) && eka_as_bool(r) == false,
+              "exists with absolute path returns false");
+    }
+
+    /* --- Test 7: mkdir + list within sandbox --- */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("subdir", 6)) };
+        call_method(fs_obj, "mkdir", &vm, args, 1);
+
+        eka_value_t args2[] = { eka_string_val(eka_string_new(".", 1)) };
+        eka_value_t r = call_method(fs_obj, "list", &vm, args2, 1);
+        CHECK(eka_obj_is_type(r, OBJ_LIST), "list returns list");
+        eka_list_t *list = eka_as_list(r);
+        /* Should contain safe.txt, subdir, app.eka */
+        CHECK(list->length >= 2, "list contains entries");
+    }
+
+    /* --- Test 8: move and copy are sandboxed --- */
+    {
+        /* Try to move a file outside sandbox */
+        eka_value_t args[] = {
+            eka_string_val(eka_string_new("safe.txt", 8)),
+            eka_string_val(eka_string_new("/tmp/escaped.txt", 16)),
+        };
+        eka_value_t r = call_method(fs_obj, "move", &vm, args, 2);
+        /* Should return nil (blocked) — safe.txt should still exist */
+        eka_value_t check[] = { eka_string_val(eka_string_new("safe.txt", 8)) };
+        eka_value_t exists = call_method(fs_obj, "exists", &vm, check, 1);
+        CHECK(eka_is_bool(exists) && eka_as_bool(exists) == true,
+              "move to /tmp blocked, file still exists");
+    }
+
+    /* Clean up */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("safe.txt", 8)) };
+        call_method(fs_obj, "delete", &vm, args, 1);
+    }
+    /* Remove sandbox directory */
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", sandbox_dir);
+    system(cmd);
+
+    /* Reset project root */
+    eka_fs_set_project_root(NULL);
+
+    PASS();
+}
+
+/* ================================================================
  * Phase 2: regex
  * ================================================================ */
 
@@ -1081,6 +1226,7 @@ int main(void) {
     test_url();
     test_validate();
     test_fs();
+    test_fs_sandbox();
     test_regex();
     test_sitemap();
     test_rss();
