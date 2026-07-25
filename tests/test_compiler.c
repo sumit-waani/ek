@@ -76,11 +76,14 @@ static eka_value_t execute_method(eka_vm_t *vm, eka_compiled_program_t *prog,
 /* ================================================================ */
 
 static void test_init_let(void) {
-    TEST("init: let x = 42");
+    TEST("init: let x = 42 stores global");
     const char *src = "let x = 42";
     eka_vm_t *vm = compile_and_init(src, "init_let");
     CHECK(vm != NULL, "should compile and init");
-    /* Verify x is set (currently globals aren't stored, so skip for now) */
+    /* Verify x is in globals — look up by interned string */
+    eka_string_t *key = eka_string_intern("x", 1);
+    eka_value_t val = eka_map_get(vm->globals, key);
+    CHECK(eka_is_number(val) && eka_as_number(val) == 42.0, "x should be 42 in globals");
     PASS();
 }
 
@@ -108,11 +111,41 @@ static void test_method_simple(void) {
 }
 
 static void test_method_with_expr(void) {
-    TEST("method: template with {{ expr }}");
-    /* Global variable resolution not fully wired yet — skip for now */
-    printf("SKIP (global vars not wired)\n");
-    tests_run--;
-    return;
+    TEST("method: template with {{ expr }} from init global");
+    const char *src =
+        "let title = \"Eka\"\n"
+        "@get /\n"
+        "  <h1>{{ title }}</h1>\n"
+        "@end";
+    eka_vm_t *vm = compile_and_init(src, "method_expr");
+    CHECK(vm != NULL, "should compile and init");
+
+    /* Re-compile to get the program (compile_and_init only returns VM, but 
+     * we need the prog. Let's do it manually.) */
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+    CHECK(prog->method_count == 1, "should have 1 method");
+
+    eka_vm_t vm2;
+    eka_vm_init(&vm2);
+    /* Execute init */
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm2, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm2, prog, 0, "method_expr");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "Eka") != NULL, "should contain 'Eka' from global");
+    PASS();
 }
 
 static void test_method_with_if(void) {
@@ -151,6 +184,40 @@ static void test_func_call(void) {
     return;
 }
 
+static void test_global_assignment(void) {
+    TEST("global assignment: let then reassign in init");
+    const char *src =
+        "let x = 10\n"
+        "x = 20\n"
+        "@get /\n"
+        "  {{ x }}\n"
+        "@end";
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+    CHECK(prog->method_count == 1, "should have 1 method");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "global_assign");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    /* x was reassigned to 20; template converts to "20" */
+    CHECK(strstr(out, "20") != NULL, "should contain '20' from reassigned global");
+    PASS();
+}
+
 int main(void) {
     printf("compiler tests:\n");
     test_init_let();
@@ -158,6 +225,7 @@ int main(void) {
     test_method_with_expr();
     test_method_with_if();
     test_func_call();
+    test_global_assignment();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

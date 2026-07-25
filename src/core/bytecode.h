@@ -66,6 +66,10 @@ typedef enum {
     OP_SET_UPVAL,     /* upvalue[A] = R(B) */
     OP_CLOSE_UPVAL,   /* close upvalue[A] */
 
+    /* --- Globals --- */
+    OP_GET_GLOBAL,    /* R(A) = globals[constant[B]] */
+    OP_SET_GLOBAL,    /* globals[constant[A]] = R(B) */
+
     OP_COUNT
 } eka_opcode_t;
 

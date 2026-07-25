@@ -127,6 +127,9 @@ eka_func_t *eka_func_new(uint32_t arity, uint32_t max_arity,
                          uint32_t code_length, uint32_t constants_count,
                          uint32_t source_line);
 
+/* --- Conversion --- */
+eka_string_t *eka_value_to_string(eka_value_t v);
+
 /* --- Native --- */
 eka_native_t *eka_native_new(eka_native_fn_t fn, const char *name);
 

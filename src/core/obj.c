@@ -474,6 +474,33 @@ eka_native_t *eka_native_new(eka_native_fn_t fn, const char *name) {
     return n;
 }
 
+/* --- Value to string conversion --- */
+
+eka_string_t *eka_value_to_string(eka_value_t v) {
+    if (eka_is_nil(v)) {
+        return eka_string_intern("", 0);
+    }
+    if (eka_is_bool(v)) {
+        return eka_string_intern(eka_as_bool(v) ? "true" : "false",
+                                 eka_as_bool(v) ? 4 : 5);
+    }
+    if (eka_is_number(v)) {
+        char buf[64];
+        int len = snprintf(buf, sizeof(buf), "%g", eka_as_number(v));
+        return eka_string_intern(buf, (size_t)len);
+    }
+    if (eka_is_int(v)) {
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "%lld", (long long)eka_as_int(v));
+        return eka_string_intern(buf, (size_t)len);
+    }
+    if (eka_obj_is_type(v, OBJ_STRING)) {
+        return eka_as_string(v);
+    }
+    /* Fallback: empty string */
+    return eka_string_intern("", 0);
+}
+
 eka_closure_t *eka_closure_new(eka_func_t *func) {
     size_t upval_size = sizeof(eka_upvalue_t *) * func->locals_count;
     eka_closure_t *c = eka_obj_alloc(OBJ_CLOSURE,

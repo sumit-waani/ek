@@ -29,6 +29,9 @@ typedef struct {
     /* Error handling */
     bool        had_error;
     const char *error_msg;
+
+    /* Context */
+    bool        is_init;       /* true if compiling init (global) scope */
 } compiler_t;
 
 /* ================================================================
@@ -165,10 +168,9 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
         if (kind == SYM_LOCAL) {
             emit(c, eka_instr_encode(OP_MOVE, reg, idx, 0));
         } else if (kind == SYM_GLOBAL) {
-            /* Load global by name (stored as constant string key).
-             * TODO: proper global resolution via globals map in VM. */
-            (void)add_string_constant(c, name, len); /* ensure string is in pool */
-            emit(c, eka_instr_encode(OP_LOAD_CONST, reg, 0, 0)); /* dummy */
+            /* Load global by name via OP_GET_GLOBAL */
+            uint32_t name_idx = add_string_constant(c, name, len);
+            emit(c, eka_instr_encode(OP_GET_GLOBAL, reg, (uint8_t)name_idx, 0));
         }
         return reg;
     }
@@ -361,8 +363,15 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
 
             if (kind == SYM_LOCAL) {
                 emit(c, eka_instr_encode(OP_MOVE, idx, val, 0));
+                /* In init scope, also sync to global */
+                if (c->is_init) {
+                    uint32_t name_idx = add_string_constant(c, name, len);
+                    emit(c, eka_instr_encode(OP_SET_GLOBAL, (uint8_t)name_idx, val, 0));
+                }
+            } else if (kind == SYM_GLOBAL) {
+                uint32_t name_idx = add_string_constant(c, name, len);
+                emit(c, eka_instr_encode(OP_SET_GLOBAL, (uint8_t)name_idx, val, 0));
             }
-            /* Global assignment: not supported in V1 via bytecode */
         } else if (target->type == AST_PROPERTY) {
             uint8_t obj = compile_expr(c, target->as.property.obj);
             uint32_t key_idx = add_string_constant(c, target->as.property.prop,
@@ -403,6 +412,14 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
         if (node->as.var_decl.value) {
             uint8_t val_reg = compile_expr(c, node->as.var_decl.value);
             emit(c, eka_instr_encode(OP_MOVE, (uint8_t)sym->index, val_reg, 0));
+
+            /* In init scope, also store in globals so methods can see it */
+            if (c->is_init) {
+                uint32_t name_idx = add_string_constant(c,
+                    node->as.var_decl.name, node->as.var_decl.name_len);
+                emit(c, eka_instr_encode(OP_SET_GLOBAL,
+                    (uint8_t)name_idx, (uint8_t)sym->index, 0));
+            }
         }
         break;
     }
@@ -647,6 +664,7 @@ eka_compiled_program_t *eka_compile(ast_node_t *program) {
     compiler_t init_c;
     memset(&init_c, 0, sizeof(init_c));
     init_c.current_scope = symtab_new_scope(NULL, true);
+    init_c.is_init = true;
 
     /* Phase 2: Method blocks */
     compiler_t method_c;

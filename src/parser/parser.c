@@ -884,15 +884,21 @@ static ast_node_t *parse_method_block(eka_parser_t *parser) {
     } else {
         /* Parse path: / followed by segments */
         /* The path is like: / | /about | /user/[id] */
-        /* We'll treat it as a string expression for simplicity */
         if (match(parser, TOKEN_SLASH) || match(parser, TOKEN_IDENTIFIER) ||
             match(parser, TOKEN_STRING)) {
-            /* Simple path — just capture the expression */
-            path = ast_new(AST_LITERAL, parser->previous);
-            /* Consume rest of path tokens until newline */
-            while (!check(parser, TOKEN_NEWLINE) && !check(parser, TOKEN_EOF)) {
+            /* Capture full path from first to last token.
+             * Adjacent tokens in source form the path (e.g. /about, /user/42). */
+            eka_token_t first = parser->previous;
+            while (!check(parser, TOKEN_NEWLINE) && !check(parser, TOKEN_EOF) &&
+                   (check(parser, TOKEN_SLASH) || check(parser, TOKEN_IDENTIFIER) ||
+                    check(parser, TOKEN_STRING) || check(parser, TOKEN_NUMBER) ||
+                    check(parser, TOKEN_LBRACKET) || check(parser, TOKEN_RBRACKET))) {
                 advance(parser);
             }
+            eka_token_t last = parser->previous;
+            eka_token_t path_tok = first;
+            path_tok.length = (size_t)(last.start + last.length - first.start);
+            path = ast_new(AST_LITERAL, path_tok);
         } else {
             /* @get / — root path */
             path = ast_new(AST_LITERAL, method_token);

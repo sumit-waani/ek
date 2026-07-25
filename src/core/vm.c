@@ -158,12 +158,17 @@ eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
         case OP_ADD: {
             eka_value_t lhs = frame->registers[b];
             eka_value_t rhs = frame->registers[c];
-            /* String concatenation */
-            if (eka_obj_is_type(lhs, OBJ_STRING) && eka_obj_is_type(rhs, OBJ_STRING)) {
-                frame->registers[a] = string_concat(lhs, rhs);
+            /* String concatenation if either operand is a string */
+            if (eka_obj_is_type(lhs, OBJ_STRING) || eka_obj_is_type(rhs, OBJ_STRING)) {
+                /* Convert both to string */
+                eka_string_t *sl = eka_obj_is_type(lhs, OBJ_STRING)
+                    ? eka_as_string(lhs) : eka_value_to_string(lhs);
+                eka_string_t *sr = eka_obj_is_type(rhs, OBJ_STRING)
+                    ? eka_as_string(rhs) : eka_value_to_string(rhs);
+                frame->registers[a] = string_concat(
+                    eka_string_val(sl), eka_string_val(sr));
             } else {
                 double result = value_to_double(lhs) + value_to_double(rhs);
-                /* If both are ints and result is a whole number, keep as int */
                 if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
                     result >= -35184372088832.0 && result <= 35184372088831.0) {
                     frame->registers[a] = eka_int((int64_t)result);
@@ -476,6 +481,30 @@ eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
                 uv->location = &uv->closed;
             }
             break;
+
+        /* --- Globals --- */
+
+        case OP_GET_GLOBAL: {
+            /* R(A) = globals[constant[B]] */
+            if (b < func->constants_count &&
+                eka_obj_is_type(func->constants[b], OBJ_STRING)) {
+                eka_string_t *key = eka_as_string(func->constants[b]);
+                frame->registers[a] = eka_map_get(vm->globals, key);
+            } else {
+                frame->registers[a] = eka_nil();
+            }
+            break;
+        }
+
+        case OP_SET_GLOBAL: {
+            /* globals[constant[A]] = R(B) */
+            if (a < func->constants_count &&
+                eka_obj_is_type(func->constants[a], OBJ_STRING)) {
+                eka_string_t *key = eka_as_string(func->constants[a]);
+                eka_map_set(vm->globals, key, frame->registers[b]);
+            }
+            break;
+        }
 
         default:
             set_error(error, "unknown opcode");

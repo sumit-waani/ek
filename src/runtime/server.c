@@ -58,8 +58,7 @@ static int find_route(eka_compiled_program_t *prog, const char *method,
         if (prog->methods[i].method == expected) {
             const char *route_path = prog->methods[i].path;
             /* Simple exact match for now */
-            if (strcmp(route_path, path) == 0 ||
-                strcmp(route_path, "/") == 0) {
+            if (strcmp(route_path, path) == 0) {
                 return i;
             }
         }
