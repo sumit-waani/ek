@@ -63,7 +63,7 @@ static arena_t *arena_new(void) {
     return a;
 }
 
-static void *arena_alloc(size_t size) {
+void *arena_alloc(size_t size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~((size_t)7);
 

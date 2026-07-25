@@ -89,6 +89,9 @@ typedef struct {
  * Object allocation
  * ================================================================ */
 
+/* Low-level arena allocation (used by VM for register arrays, etc.) */
+void  *arena_alloc(size_t size);
+
 /* Allocate + initialise an object of given type and variable size.
  * The GC manages these — do NOT free() manually. */
 void  *eka_obj_alloc(eka_objtype_t type, size_t extra_bytes);

@@ -1,0 +1,490 @@
+#include "core/vm.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+/* ================================================================
+ * VM lifecycle
+ * ================================================================ */
+
+void eka_vm_init(eka_vm_t *vm) {
+    memset(vm, 0, sizeof(*vm));
+    vm->globals = eka_map_new(32);
+}
+
+void eka_vm_free(eka_vm_t *vm) {
+    /* Objects are GC-managed, nothing to free directly */
+    (void)vm;
+}
+
+void eka_vm_set_global(eka_vm_t *vm, const char *name, eka_value_t value) {
+    eka_string_t *key = eka_string_intern(name, strlen(name));
+    eka_map_set(vm->globals, key, value);
+}
+
+eka_value_t eka_vm_get_global(eka_vm_t *vm, const char *name) {
+    eka_string_t *key = eka_string_intern(name, strlen(name));
+    return eka_map_get(vm->globals, key);
+}
+
+/* ================================================================
+ * Truthiness
+ * ================================================================ */
+
+static bool is_truthy(eka_value_t v) {
+    if (eka_is_nil(v)) return false;
+    if (eka_is_bool(v)) return eka_as_bool(v);
+    if (eka_is_int(v)) return eka_as_int(v) != 0;
+    if (eka_is_number(v)) return eka_as_number(v) != 0.0;
+    /* All objects are truthy, including empty strings/lists/maps */
+    return true;
+}
+
+/* ================================================================
+ * String concatenation helper
+ * ================================================================ */
+
+static eka_value_t string_concat(eka_value_t a, eka_value_t b) {
+    const char *sa = eka_as_string(a)->data;
+    const char *sb = eka_as_string(b)->data;
+    size_t la = eka_as_string(a)->length;
+    size_t lb = eka_as_string(b)->length;
+
+    size_t total = la + lb;
+    char *buf = malloc(total + 1);
+    if (!buf) return eka_nil();
+
+    memcpy(buf, sa, la);
+    memcpy(buf + la, sb, lb);
+    buf[total] = '\0';
+
+    eka_string_t *result = eka_string_take(buf, total);
+    return eka_string_val(result);
+}
+
+/* ================================================================
+ * Arithmetic helpers
+ * ================================================================ */
+
+static double value_to_double(eka_value_t v) {
+    if (eka_is_number(v)) return eka_as_number(v);
+    if (eka_is_int(v))    return (double)eka_as_int(v);
+    return 0.0;
+}
+
+/* ================================================================
+ * Error helper
+ * ================================================================ */
+
+static void set_error(const char **error_ptr, const char *msg) {
+    if (error_ptr) *error_ptr = msg;
+}
+
+/* ================================================================
+ * VM execution
+ * ================================================================ */
+
+#define READ_BYTE()   (*frame->ip++)
+#define READ_INSTR()  (*frame->ip++)
+#define PEEK_INSTR()  (*frame->ip)
+
+eka_value_t eka_vm_execute(eka_vm_t *vm, eka_closure_t *closure,
+                           eka_value_t *args, int arg_count,
+                           const char **error) {
+    eka_func_t *func = closure->func;
+
+    /* Set up the initial call frame */
+    eka_call_frame_t *frame = &vm->frames[vm->frame_count++];
+    frame->closure   = closure;
+    frame->ip        = func->code;
+    frame->registers = arena_alloc(sizeof(eka_value_t) * EKA_MAX_REGISTERS);
+    frame->stack_top = frame->registers;
+
+    /* Zero-initialise registers */
+    for (int i = 0; i < EKA_MAX_REGISTERS; i++) {
+        frame->registers[i] = eka_nil();
+    }
+
+    /* Copy arguments into registers starting at R(0) */
+    int nargs = arg_count < (int)func->max_arity ? arg_count : (int)func->max_arity;
+    for (int i = 0; i < nargs; i++) {
+        frame->registers[i] = args[i];
+    }
+    /* Fill missing args with nil (or default values — TODO) */
+    for (int i = nargs; i < (int)func->max_arity; i++) {
+        frame->registers[i] = eka_nil();
+    }
+
+    /* Execution loop */
+    for (;;) {
+        eka_instr_t instr = READ_INSTR();
+        eka_opcode_t op = eka_instr_opcode(instr);
+        uint8_t a = eka_instr_a(instr);
+        uint8_t b = eka_instr_b(instr);
+        uint8_t c = eka_instr_c(instr);
+
+        switch (op) {
+
+        /* --- Constants --- */
+
+        case OP_LOAD_CONST:
+            if (b < func->constants_count) {
+                frame->registers[a] = func->constants[b];
+            }
+            break;
+
+        case OP_LOAD_NIL:
+            frame->registers[a] = eka_nil();
+            break;
+
+        case OP_LOAD_BOOL:
+            frame->registers[a] = eka_bool(b != 0);
+            break;
+
+        case OP_LOAD_INT: {
+            int16_t val = eka_instr_small_int(instr);
+            frame->registers[a] = eka_int(val);
+            break;
+        }
+
+        case OP_MOVE:
+            frame->registers[a] = frame->registers[b];
+            break;
+
+        /* --- Arithmetic --- */
+
+        case OP_ADD: {
+            eka_value_t lhs = frame->registers[b];
+            eka_value_t rhs = frame->registers[c];
+            /* String concatenation */
+            if (eka_obj_is_type(lhs, OBJ_STRING) && eka_obj_is_type(rhs, OBJ_STRING)) {
+                frame->registers[a] = string_concat(lhs, rhs);
+            } else {
+                double result = value_to_double(lhs) + value_to_double(rhs);
+                /* If both are ints and result is a whole number, keep as int */
+                if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
+                    result >= -35184372088832.0 && result <= 35184372088831.0) {
+                    frame->registers[a] = eka_int((int64_t)result);
+                } else {
+                    frame->registers[a] = eka_number(result);
+                }
+            }
+            break;
+        }
+
+        case OP_SUB:
+            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) -
+                                             value_to_double(frame->registers[c]));
+            break;
+
+        case OP_MUL:
+            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) *
+                                             value_to_double(frame->registers[c]));
+            break;
+
+        case OP_DIV: {
+            double divisor = value_to_double(frame->registers[c]);
+            if (divisor == 0.0) {
+                set_error(error, "division by zero");
+                return eka_nil();
+            }
+            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) / divisor);
+            break;
+        }
+
+        case OP_MOD: {
+            double divisor = value_to_double(frame->registers[c]);
+            if (divisor == 0.0) {
+                set_error(error, "modulo by zero");
+                return eka_nil();
+            }
+            frame->registers[a] = eka_number(fmod(value_to_double(frame->registers[b]), divisor));
+            break;
+        }
+
+        case OP_NEG:
+            frame->registers[a] = eka_number(-value_to_double(frame->registers[b]));
+            break;
+
+        /* --- Comparison --- */
+
+        case OP_EQ: {
+            bool equal = false;
+            eka_value_t lhs = frame->registers[b];
+            eka_value_t rhs = frame->registers[c];
+            if (eka_is_nil(lhs) && eka_is_nil(rhs)) {
+                equal = true;
+            } else if (eka_is_bool(lhs) && eka_is_bool(rhs)) {
+                equal = (eka_as_bool(lhs) == eka_as_bool(rhs));
+            } else if (eka_is_int(lhs) && eka_is_int(rhs)) {
+                equal = (eka_as_int(lhs) == eka_as_int(rhs));
+            } else if (eka_is_number(lhs) && eka_is_number(rhs)) {
+                equal = (eka_as_number(lhs) == eka_as_number(rhs));
+            } else if (eka_is_obj(lhs) && eka_is_obj(rhs)) {
+                equal = (eka_as_obj(lhs) == eka_as_obj(rhs));
+            }
+            /* Mixed types: just compare the raw bits (cheap and fast) */
+            if (!eka_is_obj(lhs) && !eka_is_obj(rhs) &&
+                !eka_is_nil(lhs) && !eka_is_nil(rhs) &&
+                !eka_is_bool(lhs) && !eka_is_bool(rhs)) {
+                equal = (lhs == rhs);
+            }
+            frame->registers[a] = eka_bool(equal);
+            break;
+        }
+
+        case OP_LT:
+            frame->registers[a] = eka_bool(
+                value_to_double(frame->registers[b]) <
+                value_to_double(frame->registers[c]));
+            break;
+
+        case OP_LE:
+            frame->registers[a] = eka_bool(
+                value_to_double(frame->registers[b]) <=
+                value_to_double(frame->registers[c]));
+            break;
+
+        /* --- Logic --- */
+
+        case OP_NOT:
+            frame->registers[a] = eka_bool(!is_truthy(frame->registers[b]));
+            break;
+
+        case OP_AND:
+            /* Short-circuit: if B is falsy → B, else C */
+            frame->registers[a] = is_truthy(frame->registers[b])
+                                  ? frame->registers[c]
+                                  : frame->registers[b];
+            break;
+
+        case OP_OR:
+            /* Short-circuit: if B is truthy → B, else C */
+            frame->registers[a] = is_truthy(frame->registers[b])
+                                  ? frame->registers[b]
+                                  : frame->registers[c];
+            break;
+
+        /* --- Control flow --- */
+
+        case OP_JUMP:
+            frame->ip += eka_instr_offset(instr);
+            break;
+
+        case OP_JUMP_IF_FALSE:
+            if (!is_truthy(frame->registers[a])) {
+                frame->ip += eka_instr_offset(instr);
+            }
+            break;
+
+        case OP_JUMP_IF_TRUE:
+            if (is_truthy(frame->registers[a])) {
+                frame->ip += eka_instr_offset(instr);
+            }
+            break;
+
+        /* --- Functions --- */
+
+        case OP_CALL: {
+            eka_value_t callee = frame->registers[b];
+            int arg_count_call = c;
+
+            if (eka_obj_is_type(callee, OBJ_CLOSURE)) {
+                eka_closure_t *cl = eka_as_closure(callee);
+                int nargs_to_pass = arg_count_call < (int)cl->func->max_arity
+                                    ? arg_count_call : (int)cl->func->max_arity;
+
+                /* Check stack depth */
+                if (vm->frame_count >= EKA_MAX_CALL_FRAMES) {
+                    set_error(error, "stack overflow");
+                    return eka_nil();
+                }
+
+                /* Push new frame */
+                eka_call_frame_t *new_frame = &vm->frames[vm->frame_count++];
+                new_frame->closure   = cl;
+                new_frame->ip        = cl->func->code;
+                new_frame->registers = arena_alloc(sizeof(eka_value_t) * EKA_MAX_REGISTERS);
+                new_frame->stack_top = new_frame->registers;
+
+                for (int i = 0; i < EKA_MAX_REGISTERS; i++) {
+                    new_frame->registers[i] = eka_nil();
+                }
+
+                /* Pass arguments: they're in registers b+1 to b+arg_count_call */
+                for (int i = 0; i < nargs_to_pass; i++) {
+                    new_frame->registers[i] = frame->registers[b + 1 + i];
+                }
+                for (int i = nargs_to_pass; i < (int)cl->func->max_arity; i++) {
+                    new_frame->registers[i] = eka_nil();
+                }
+
+                frame = new_frame;  /* switch to the new frame */
+            } else if (eka_obj_is_type(callee, OBJ_NATIVE)) {
+                eka_native_t *nat = eka_as_native(callee);
+                eka_value_t native_args[16];
+                int native_argc = arg_count_call < 16 ? arg_count_call : 16;
+                for (int i = 0; i < native_argc; i++) {
+                    native_args[i] = frame->registers[b + 1 + i];
+                }
+                frame->registers[a] = nat->fn(native_argc, native_args);
+            } else {
+                set_error(error, "cannot call non-function");
+                return eka_nil();
+            }
+            break;
+        }
+
+        case OP_RETURN: {
+            eka_value_t result = frame->registers[a];
+            vm->frame_count--;
+            if (vm->frame_count == 0) {
+                return result;
+            }
+            /* Return to caller */
+            frame = &vm->frames[vm->frame_count - 1];
+            /* Write result into the register A of the CALL instruction that
+             * triggered this call. We store it in frame->stack_top[0] as a
+             * temporary; the caller reads it after the CALL returns.
+             * 
+             * For now: store result in R(0) of the current (now-caller) frame.
+             * A more refined approach would track the destination register
+             * in the call frame.
+             */
+            frame->registers[0] = result;
+            break;
+        }
+
+        case OP_CLOSURE: {
+            if (b < func->constants_count &&
+                eka_obj_is_type(func->constants[b], OBJ_FUNC)) {
+                eka_func_t *inner = eka_as_func(func->constants[b]);
+                eka_closure_t *cl = eka_closure_new(inner);
+                frame->registers[a] = eka_closure_val(cl);
+            }
+            break;
+        }
+
+        /* --- Property access --- */
+
+        case OP_GET_PROP: {
+            eka_value_t obj = frame->registers[b];
+            if (c < func->constants_count &&
+                eka_obj_is_type(func->constants[c], OBJ_STRING)) {
+                eka_string_t *key = eka_as_string(func->constants[c]);
+                if (eka_obj_is_type(obj, OBJ_MAP)) {
+                    frame->registers[a] = eka_map_get(eka_as_map(obj), key);
+                } else {
+                    /* Property access on non-map → null (fault-tolerant) */
+                    frame->registers[a] = eka_nil();
+                }
+            }
+            break;
+        }
+
+        case OP_SET_PROP: {
+            eka_value_t obj = frame->registers[a];
+            if (c < func->constants_count &&
+                eka_obj_is_type(func->constants[c], OBJ_STRING)) {
+                eka_string_t *key = eka_as_string(func->constants[c]);
+                if (eka_obj_is_type(obj, OBJ_MAP)) {
+                    eka_map_set(eka_as_map(obj), key, frame->registers[b]);
+                }
+            }
+            break;
+        }
+
+        case OP_GET_INDEX: {
+            eka_value_t obj = frame->registers[b];
+            eka_value_t idx = frame->registers[c];
+            if (eka_obj_is_type(obj, OBJ_LIST) && eka_is_int(idx)) {
+                int64_t i = eka_as_int(idx);
+                eka_list_t *list = eka_as_list(obj);
+                if (i < 0) i += list->length;  /* negative indexing */
+                if (i >= 0 && (uint32_t)i < list->length) {
+                    frame->registers[a] = list->items[i];
+                } else {
+                    frame->registers[a] = eka_nil();
+                }
+            } else if (eka_obj_is_type(obj, OBJ_MAP) && eka_obj_is_type(idx, OBJ_STRING)) {
+                frame->registers[a] = eka_map_get(eka_as_map(obj), eka_as_string(idx));
+            } else if (eka_obj_is_type(obj, OBJ_STRING) && eka_is_int(idx)) {
+                /* String indexing: "hello"[1] → "e" */
+                eka_string_t *s = eka_as_string(obj);
+                int64_t i = eka_as_int(idx);
+                if (i < 0) i += s->length;
+                if (i >= 0 && (uint32_t)i < s->length) {
+                    frame->registers[a] = eka_string_val(
+                        eka_string_new(&s->data[i], 1));
+                } else {
+                    frame->registers[a] = eka_nil();
+                }
+            } else {
+                frame->registers[a] = eka_nil();
+            }
+            break;
+        }
+
+        case OP_SET_INDEX: {
+            /* R(A)[R(B)] = R(C) */
+            eka_value_t obj = frame->registers[a];
+            eka_value_t idx = frame->registers[b];
+            eka_value_t val = frame->registers[c];
+            if (eka_obj_is_type(obj, OBJ_LIST) && eka_is_int(idx)) {
+                int64_t i = eka_as_int(idx);
+                eka_list_t *list = eka_as_list(obj);
+                if (i < 0) i += list->length;
+                if (i >= 0 && (uint32_t)i < list->length) {
+                    list->items[i] = val;
+                }
+            } else if (eka_obj_is_type(obj, OBJ_MAP) && eka_obj_is_type(idx, OBJ_STRING)) {
+                eka_map_set(eka_as_map(obj), eka_as_string(idx), val);
+            }
+            break;
+        }
+
+        /* --- Containers --- */
+
+        case OP_NEW_LIST:
+            frame->registers[a] = eka_list_val(eka_list_new(b > 0 ? b : 4));
+            break;
+
+        case OP_NEW_MAP:
+            frame->registers[a] = eka_map_val(eka_map_new(b > 0 ? b : 8));
+            break;
+
+        /* --- Upvalues --- */
+
+        case OP_GET_UPVAL:
+            if (b < closure->upvalue_count && closure->upvalues[b]) {
+                frame->registers[a] = *closure->upvalues[b]->location;
+            }
+            break;
+
+        case OP_SET_UPVAL:
+            if (a < closure->upvalue_count && closure->upvalues[a]) {
+                *closure->upvalues[a]->location = frame->registers[b];
+            }
+            break;
+
+        case OP_CLOSE_UPVAL:
+            if (a < closure->upvalue_count && closure->upvalues[a]) {
+                eka_upvalue_t *uv = closure->upvalues[a];
+                uv->closed = *uv->location;
+                uv->location = &uv->closed;
+            }
+            break;
+
+        default:
+            set_error(error, "unknown opcode");
+            return eka_nil();
+        }
+    }
+}
+
+eka_value_t eka_vm_execute_init(eka_vm_t *vm, eka_closure_t *closure,
+                                const char **error) {
+    return eka_vm_execute(vm, closure, NULL, 0, error);
+}

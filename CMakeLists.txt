@@ -46,6 +46,7 @@ set(EKA_SOURCES
     src/cli/cli.c
     src/core/value.c
     src/core/obj.c
+    src/core/vm.c
 )
 
 # -------------------------------------------------------------------
