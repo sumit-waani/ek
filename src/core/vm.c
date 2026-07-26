@@ -273,12 +273,9 @@ void eka_vm_clone_globals(eka_vm_t *dest, const eka_vm_t *src) {
         dest->db_conns[i] = src->db_conns[i];
     }
 
-    /* Share SSE connection tracking (shared state) */
+    /* Share SSE connection tracking — point to master's live state */
     dest->sse_loop = src->sse_loop;
-    dest->sse_client_count = src->sse_client_count;
-    for (int i = 0; i < src->sse_client_count; i++) {
-        dest->sse_clients[i] = src->sse_clients[i];
-    }
+    dest->sse_master = (eka_vm_t *)src;  /* worker uses master's SSE list */
 
     eka_gc_current_vm = prev;
 }
@@ -444,23 +441,46 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
             break;
         }
 
-        case OP_SUB:
-            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) -
-                                             value_to_double(frame->registers[c]));
+        case OP_SUB: {
+            eka_value_t lhs = frame->registers[b];
+            eka_value_t rhs = frame->registers[c];
+            double result = value_to_double(lhs) - value_to_double(rhs);
+            if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
+                result >= -35184372088832.0 && result <= 35184372088831.0) {
+                frame->registers[a] = eka_int((int64_t)result);
+            } else {
+                frame->registers[a] = eka_number(result);
+            }
             break;
+        }
 
-        case OP_MUL:
-            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) *
-                                             value_to_double(frame->registers[c]));
+        case OP_MUL: {
+            eka_value_t lhs = frame->registers[b];
+            eka_value_t rhs = frame->registers[c];
+            double result = value_to_double(lhs) * value_to_double(rhs);
+            if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
+                result >= -35184372088832.0 && result <= 35184372088831.0) {
+                frame->registers[a] = eka_int((int64_t)result);
+            } else {
+                frame->registers[a] = eka_number(result);
+            }
             break;
+        }
 
         case OP_DIV: {
+            eka_value_t lhs = frame->registers[b];
             double divisor = value_to_double(frame->registers[c]);
             if (divisor == 0.0) {
                 set_error(error, "division by zero");
                 return eka_nil();
             }
-            frame->registers[a] = eka_number(value_to_double(frame->registers[b]) / divisor);
+            double result = value_to_double(lhs) / divisor;
+            if (eka_is_int(lhs) && eka_is_int(frame->registers[c]) && result == floor(result) &&
+                result >= -35184372088832.0 && result <= 35184372088831.0) {
+                frame->registers[a] = eka_int((int64_t)result);
+            } else {
+                frame->registers[a] = eka_number(result);
+            }
             break;
         }
 

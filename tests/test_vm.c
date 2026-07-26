@@ -444,6 +444,95 @@ static void test_string_length(void) {
 /* Scratch VM for arena allocation in test helpers (make_func, make_closure). */
 static eka_vm_t scratch_vm;
 
+/* ================================================================
+ * Test: int arithmetic preservation (SUB/MUL/DIV keep int type)
+ * ================================================================ */
+
+static void test_int_arithmetic(void) {
+    TEST("int arithmetic preservation");
+
+    /* 10 - 3 = 7 (should be int, not float) */
+    {
+        eka_value_t consts[] = { eka_int(10), eka_int(3) };
+        uint32_t code[] = {
+            eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),
+            eka_instr_encode(OP_LOAD_CONST, 1, 1, 0),
+            eka_instr_encode(OP_SUB, 2, 0, 1),
+            eka_instr_encode(OP_RETURN, 2, 0, 0),
+        };
+        eka_func_t *func = make_func(code, 4, consts, 2);
+        eka_closure_t *cl = make_closure(func);
+        eka_vm_t vm;
+        eka_vm_init(&vm);
+        const char *error = NULL;
+        eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+        CHECK(error == NULL, "no error");
+        CHECK(eka_is_int(result), "10-3 should be int");
+        CHECK(eka_as_int(result) == 7, "10-3 should be 7");
+    }
+
+    /* 6 * 7 = 42 (should be int) */
+    {
+        eka_value_t consts[] = { eka_int(6), eka_int(7) };
+        uint32_t code[] = {
+            eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),
+            eka_instr_encode(OP_LOAD_CONST, 1, 1, 0),
+            eka_instr_encode(OP_MUL, 2, 0, 1),
+            eka_instr_encode(OP_RETURN, 2, 0, 0),
+        };
+        eka_func_t *func = make_func(code, 4, consts, 2);
+        eka_closure_t *cl = make_closure(func);
+        eka_vm_t vm;
+        eka_vm_init(&vm);
+        const char *error = NULL;
+        eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+        CHECK(error == NULL, "no error");
+        CHECK(eka_is_int(result), "6*7 should be int");
+        CHECK(eka_as_int(result) == 42, "6*7 should be 42");
+    }
+
+    /* 10 / 2 = 5 (should be int) */
+    {
+        eka_value_t consts[] = { eka_int(10), eka_int(2) };
+        uint32_t code[] = {
+            eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),
+            eka_instr_encode(OP_LOAD_CONST, 1, 1, 0),
+            eka_instr_encode(OP_DIV, 2, 0, 1),
+            eka_instr_encode(OP_RETURN, 2, 0, 0),
+        };
+        eka_func_t *func = make_func(code, 4, consts, 2);
+        eka_closure_t *cl = make_closure(func);
+        eka_vm_t vm;
+        eka_vm_init(&vm);
+        const char *error = NULL;
+        eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+        CHECK(error == NULL, "no error");
+        CHECK(eka_is_int(result), "10/2 should be int");
+        CHECK(eka_as_int(result) == 5, "10/2 should be 5");
+    }
+
+    /* 7 / 2 = 3.5 (should be float) */
+    {
+        eka_value_t consts[] = { eka_int(7), eka_int(2) };
+        uint32_t code[] = {
+            eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),
+            eka_instr_encode(OP_LOAD_CONST, 1, 1, 0),
+            eka_instr_encode(OP_DIV, 2, 0, 1),
+            eka_instr_encode(OP_RETURN, 2, 0, 0),
+        };
+        eka_func_t *func = make_func(code, 4, consts, 2);
+        eka_closure_t *cl = make_closure(func);
+        eka_vm_t vm;
+        eka_vm_init(&vm);
+        const char *error = NULL;
+        eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+        CHECK(error == NULL, "no error");
+        CHECK(eka_is_number(result), "7/2 should be float");
+    }
+
+    PASS();
+}
+
 int main(void) {
     printf("VM tests:\n");
     eka_vm_init(&scratch_vm);  /* sets eka_gc_current_vm for arena_alloc */
@@ -459,6 +548,7 @@ int main(void) {
     test_map_keys_method();
     test_map_has_method();
     test_string_length();
+    test_int_arithmetic();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

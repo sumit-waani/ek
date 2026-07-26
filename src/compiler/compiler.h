@@ -27,6 +27,7 @@ typedef struct eka_compiled_program_t {
         eka_token_type_t method;   /* @get, @post, etc. */
         const char      *path;     /* route path string */
         eka_func_t      *func;     /* compiled handler */
+        bool             csrf_disabled; /* @csrf off */
     } methods[MAX_METHODS];
     int method_count;
 

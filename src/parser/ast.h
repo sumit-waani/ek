@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* ================================================================
  * AST Node types
@@ -142,6 +143,7 @@ struct ast_node_t {
             eka_token_type_t method;  /* TOKEN_AT_GET etc */
             ast_node_t      *path;    /* expression (usually string) */
             ast_node_t      *body;    /* block of template nodes */
+            bool             csrf_disabled; /* @csrf off */
         } method_block;
 
         /* AST_TEMPLATE_IF / AST_FOR_STMT */

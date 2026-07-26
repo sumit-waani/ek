@@ -815,12 +815,18 @@ static eka_value_t markdown_parse(eka_vm_t *vm, void *ctx, int argc, eka_value_t
  *    cache.clear()                   → nil
  * ================================================================ */
 
+/* Cache mutex — protects shared cache_store across worker threads */
+#include <pthread.h>
+static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static eka_value_t cache_set(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)ctx;
     CHECK_ARGC(2);
     if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
     eka_string_t *key = eka_as_string(args[0]);
+    pthread_mutex_lock(&cache_mutex);
     eka_map_set(vm->cache_store, key, args[1]);
+    pthread_mutex_unlock(&cache_mutex);
     /* TTL ignored for V1 simplicity */
     (void)(argc >= 3 ? args[2] : eka_nil());
     return eka_nil();
@@ -831,7 +837,10 @@ static eka_value_t cache_get(eka_vm_t *vm, void *ctx, int argc, eka_value_t *arg
     CHECK_ARGC(1);
     if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
     eka_string_t *key = eka_as_string(args[0]);
-    return eka_map_get(vm->cache_store, key);
+    pthread_mutex_lock(&cache_mutex);
+    eka_value_t val = eka_map_get(vm->cache_store, key);
+    pthread_mutex_unlock(&cache_mutex);
+    return val;
 }
 
 static eka_value_t cache_delete(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
@@ -839,14 +848,17 @@ static eka_value_t cache_delete(eka_vm_t *vm, void *ctx, int argc, eka_value_t *
     CHECK_ARGC(1);
     if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
     eka_string_t *key = eka_as_string(args[0]);
+    pthread_mutex_lock(&cache_mutex);
     eka_map_delete(vm->cache_store, key);
+    pthread_mutex_unlock(&cache_mutex);
     return eka_nil();
 }
 
 static eka_value_t cache_clear(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)ctx; (void)argc; (void)args;
-    /* Replace cache with fresh map */
+    pthread_mutex_lock(&cache_mutex);
     vm->cache_store = eka_map_new(64);
+    pthread_mutex_unlock(&cache_mutex);
     return eka_nil();
 }
 
@@ -2437,16 +2449,17 @@ static eka_value_t sse_broadcast(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
     const char *event = arg_string(argc, args, 0, "message");
     const char *data = arg_string(argc, args, 1, "");
 
+    /* Use master VM's SSE state if available (worker VMs have stale copies) */
+    eka_vm_t *sse_vm = vm->sse_master ? vm->sse_master : vm;
+
     char frame[4096];
     int frame_len = snprintf(frame, sizeof(frame),
         "event: %s\r\ndata: %s\r\n\r\n", event, data);
     uv_buf_t buf = uv_buf_init(frame, (unsigned int)frame_len);
 
-    for (int i = 0; i < vm->sse_client_count; i++) {
-        uv_tcp_t *client = (uv_tcp_t *)vm->sse_clients[i];
+    for (int i = 0; i < sse_vm->sse_client_count; i++) {
+        uv_tcp_t *client = (uv_tcp_t *)sse_vm->sse_clients[i];
         if (client) {
-            /* Skip the current client if it called broadcast (they already see it
-             * if they're connected; actually, broadcast should NOT skip current) */
             uv_write_t *wreq = malloc(sizeof(uv_write_t));
             if (wreq) {
                 wreq->data = NULL;
@@ -2459,7 +2472,8 @@ static eka_value_t sse_broadcast(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
 
 static eka_value_t sse_count(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)ctx; (void)argc; (void)args;
-    return eka_int(vm->sse_client_count);
+    eka_vm_t *sse_vm = vm->sse_master ? vm->sse_master : vm;
+    return eka_int(sse_vm->sse_client_count);
 }
 
 /* ================================================================

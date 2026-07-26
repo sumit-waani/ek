@@ -131,6 +131,7 @@ typedef struct eka_vm_t {
     void           *sse_loop;                         /* uv_loop_t*, for sse.send */
     void           *current_client;                   /* uv_tcp_t*, set per-request */
     int             sse_current_idx;                  /* index in sse_clients, or -1 */
+    struct eka_vm_t *sse_master;                      /* master VM for shared SSE state */
 
     /* --- Session store (SQLite) --- */
     void           *session_db;                       /* sqlite3* */

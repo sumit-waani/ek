@@ -500,11 +500,69 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     parse_session_cookie(&worker, req);
     eka_session_load(&worker);
 
+    /* CSRF protection: check mutating methods unless @csrf off */
+    if (!s->prog->methods[midx].csrf_disabled &&
+        (strcmp(req->method, "POST") == 0 || strcmp(req->method, "PUT") == 0 ||
+         strcmp(req->method, "PATCH") == 0 || strcmp(req->method, "DELETE") == 0)) {
+        /* Check for X-Eka-Request: 1 header (sent by e-* client runtime) */
+        const char *eka_hdr = eka_http_get_header(req, "X-Eka-Request");
+        bool csrf_ok = (eka_hdr && strcmp(eka_hdr, "1") == 0);
+
+        if (!csrf_ok && worker.session_data) {
+            /* Check for _csrf token match in query or body */
+            const char *csrf_token = NULL;
+
+            /* Look up the session's CSRF token */
+            eka_string_t *csrf_key = eka_string_intern("_csrf_token", 11);
+            eka_value_t stored = eka_map_get(worker.session_data, csrf_key);
+            if (eka_obj_is_type(stored, OBJ_STRING)) {
+                csrf_token = eka_as_string(stored)->data;
+            }
+
+            if (csrf_token) {
+                /* Check query string */
+                if (req->query) {
+                    const char *p = strstr(req->query, "_csrf=");
+                    if (p) {
+                        p += 5;
+                        const char *end = p;
+                        while (*end && *end != '&') end++;
+                        if (strncmp(p, csrf_token, strlen(csrf_token)) == 0 &&
+                            (size_t)(end - p) == strlen(csrf_token)) {
+                            csrf_ok = true;
+                        }
+                    }
+                }
+                /* Check POST body */
+                if (!csrf_ok && req->body && req->body_len > 0) {
+                    const char *p = strstr(req->body, "_csrf=");
+                    if (p) {
+                        p += 5;
+                        const char *end = p;
+                        while (*end && *end != '&' && (size_t)(end - req->body) < req->body_len) end++;
+                        if (strncmp(p, csrf_token, strlen(csrf_token)) == 0 &&
+                            (size_t)(end - p) == strlen(csrf_token)) {
+                            csrf_ok = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!csrf_ok) {
+            conn->response_data = build_response("403 Forbidden: CSRF validation failed",
+                                                  38, 403, "text/plain", NULL, &conn->response_len);
+            eka_builtins_teardown_request(&worker);
+            eka_vm_free(&worker);
+            return;
+        }
+    }
+
     /* Set SSE context: current client + event loop */
     worker.current_client = &conn->client;
     worker.sse_loop = s->loop;
 
-    /* Execute the method's bytecode (eKa_vm_execute sets eka_gc_current_vm internally) */
+    /* Execute the method's bytecode */
     eka_closure_t *cl = eka_closure_new(s->prog->methods[midx].func);
     const char *err = NULL;
     eka_value_t result = eka_vm_execute(&worker, cl, NULL, 0, &err);

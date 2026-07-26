@@ -872,10 +872,12 @@ static ast_node_t *parse_method_block(eka_parser_t *parser) {
     /* For V1: parse as a single expression. The lexer splits / and identifiers.
      * We'll concatenate path segments into a string expression. */
     ast_node_t *path = NULL;
+    bool csrf_disabled = false;
 
     /* Check for CSRF off */
     if (match(parser, TOKEN_AT_CSRF)) {
         /* @csrf off — just consume 'off' */
+        csrf_disabled = true;
         if (match(parser, TOKEN_IDENTIFIER)) {
             /* csrf off — valid */
         }
@@ -925,6 +927,7 @@ static ast_node_t *parse_method_block(eka_parser_t *parser) {
     node->as.method_block.method = method;
     node->as.method_block.path = path;
     node->as.method_block.body = body;
+    node->as.method_block.csrf_disabled = csrf_disabled;
 
     return node;
 }

@@ -917,6 +917,7 @@ eka_compiled_program_t *eka_compile(ast_node_t *program) {
                     prog->methods[m].path = "/";
                 }
                 prog->methods[m].func = f;
+                prog->methods[m].csrf_disabled = node->as.method_block.csrf_disabled;
             }
         } else {
             /* Init statement */
