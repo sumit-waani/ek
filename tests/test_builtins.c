@@ -1197,6 +1197,169 @@ static void test_session(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: number.parse
+ * ================================================================ */
+
+static void test_number_parse(void) {
+    TEST("number.parse");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t num_obj = eka_vm_get_global(&vm, "number");
+
+    /* Parse integer */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("42", 2)) };
+        eka_value_t r = call_method(num_obj, "parse", &vm, args, 1);
+        CHECK(eka_is_int(r), "parse('42') should be int");
+        CHECK(eka_as_int(r) == 42, "parse('42') should be 42");
+    }
+
+    /* Parse float */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("3.14", 4)) };
+        eka_value_t r = call_method(num_obj, "parse", &vm, args, 1);
+        CHECK(eka_is_number(r), "parse('3.14') should be number");
+        CHECK(eka_as_number(r) > 3.13 && eka_as_number(r) < 3.15, "parse('3.14') should be ~3.14");
+    }
+
+    /* Parse invalid */
+    {
+        eka_value_t args[] = { eka_string_val(eka_string_new("hello", 5)) };
+        eka_value_t r = call_method(num_obj, "parse", &vm, args, 1);
+        CHECK(eka_is_nil(r), "parse('hello') should be nil");
+    }
+
+    PASS();
+}
+
+/* ================================================================
+ * Test: crypto.sha512
+ * ================================================================ */
+
+static void test_crypto_sha512(void) {
+    TEST("crypto.sha512");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t crypto_obj = eka_vm_get_global(&vm, "crypto");
+    eka_value_t args[] = { eka_string_val(eka_string_new("hello", 5)) };
+    eka_value_t r = call_method(crypto_obj, "sha512", &vm, args, 1);
+
+    CHECK(eka_obj_is_type(r, OBJ_STRING), "sha512 should return string");
+    CHECK(eka_as_string(r)->length == 128, "sha512 should be 128 hex chars");
+    /* Known SHA-512 of "hello" starts with "9b71d..." */
+    CHECK(strncmp(eka_as_string(r)->data, "9b71d", 5) == 0, "sha512('hello') prefix should match");
+    PASS();
+}
+
+/* ================================================================
+ * Test: crypto.hmac
+ * ================================================================ */
+
+static void test_crypto_hmac(void) {
+    TEST("crypto.hmac");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t crypto_obj = eka_vm_get_global(&vm, "crypto");
+    eka_value_t args[] = {
+        eka_string_val(eka_string_new("sha256", 6)),
+        eka_string_val(eka_string_new("secret", 6)),
+        eka_string_val(eka_string_new("hello", 5)),
+    };
+    eka_value_t r = call_method(crypto_obj, "hmac", &vm, args, 3);
+
+    CHECK(eka_obj_is_type(r, OBJ_STRING), "hmac should return string");
+    CHECK(eka_as_string(r)->length == 64, "hmac sha256 should be 64 hex chars");
+    PASS();
+}
+
+/* ================================================================
+ * Test: datetime.parse
+ * ================================================================ */
+
+static void test_datetime_parse(void) {
+    TEST("datetime.parse");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t dt_obj = eka_vm_get_global(&vm, "datetime");
+    eka_value_t args[] = {
+        eka_string_val(eka_string_new("2024-01-15", 10)),
+        eka_string_val(eka_string_new("%Y-%m-%d", 8)),
+    };
+    eka_value_t r = call_method(dt_obj, "parse", &vm, args, 2);
+
+    CHECK(eka_obj_is_type(r, OBJ_MAP), "parse should return map");
+
+    eka_string_t *year_key = eka_string_intern("year", 4);
+    eka_value_t year = eka_map_get(eka_as_map(r), year_key);
+    CHECK(eka_is_int(year), "year should be int");
+    CHECK(eka_as_int(year) == 2024, "year should be 2024");
+
+    eka_string_t *month_key = eka_string_intern("month", 5);
+    eka_value_t month = eka_map_get(eka_as_map(r), month_key);
+    CHECK(eka_as_int(month) == 1, "month should be 1");
+
+    eka_string_t *day_key = eka_string_intern("day", 3);
+    eka_value_t day = eka_map_get(eka_as_map(r), day_key);
+    CHECK(eka_as_int(day) == 15, "day should be 15");
+
+    PASS();
+}
+
+/* ================================================================
+ * Test: response.cookie
+ * ================================================================ */
+
+static void test_response_cookie(void) {
+    TEST("response.cookie");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    /* Simulate a request context */
+    eka_http_request_t req;
+    memset(&req, 0, sizeof(req));
+    req.method = "GET";
+    req.path = "/";
+    eka_builtins_setup_request(&vm, &req);
+
+    eka_value_t resp_obj = eka_vm_get_global(&vm, "response");
+
+    /* Set a cookie with options */
+    eka_map_t *opts = eka_map_new(8);
+    eka_string_t *k;
+    k = eka_string_intern("maxAge", 6); eka_map_set(opts, k, eka_int(3600));
+    k = eka_string_intern("httpOnly", 8); eka_map_set(opts, k, eka_bool(true));
+    k = eka_string_intern("secure", 6); eka_map_set(opts, k, eka_bool(true));
+    k = eka_string_intern("sameSite", 8); eka_map_set(opts, k, eka_string_val(eka_string_new("Strict", 6)));
+
+    eka_value_t args[] = {
+        eka_string_val(eka_string_new("token", 5)),
+        eka_string_val(eka_string_new("abc123", 6)),
+        eka_map_val(opts),
+    };
+    call_method(resp_obj, "cookie", &vm, args, 3);
+
+    CHECK(vm.response_state.cookie_count == 1, "should have 1 cookie");
+    CHECK(strcmp(vm.response_state.cookies[0].name, "token") == 0, "cookie name should be 'token'");
+    CHECK(strcmp(vm.response_state.cookies[0].value, "abc123") == 0, "cookie value should be 'abc123'");
+    CHECK(vm.response_state.cookies[0].max_age == 3600, "max_age should be 3600");
+    CHECK(vm.response_state.cookies[0].http_only == true, "httpOnly should be true");
+    CHECK(vm.response_state.cookies[0].secure == true, "secure should be true");
+    CHECK(strcmp(vm.response_state.cookies[0].same_site, "Strict") == 0, "sameSite should be 'Strict'");
+
+    eka_builtins_teardown_request(&vm);
+    PASS();
+}
+
 int main(void) {
     printf("Builtins tests:\n");
 
@@ -1232,6 +1395,13 @@ int main(void) {
     test_rss();
     test_i18n();
     test_session();
+
+    /* Batch 2 */
+    test_number_parse();
+    test_crypto_sha512();
+    test_crypto_hmac();
+    test_datetime_parse();
+    test_response_cookie();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

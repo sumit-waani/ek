@@ -50,6 +50,9 @@ typedef struct {
     int64_t          last_id;
 } eka_db_conn_t;
 
+/* Max response cookies */
+#define EKA_MAX_COOKIES 8
+
 /* Per-request response state (mutated by response.* builtins) */
 typedef struct {
     int         status;
@@ -64,6 +67,19 @@ typedef struct {
         char value[256];
     } extra_headers[EKA_MAX_RESP_HEADERS];
     int         header_count;
+
+    /* Cookies to set */
+    struct {
+        char name[64];
+        char value[256];
+        int  max_age;       /* seconds, -1 = session cookie */
+        bool http_only;
+        bool secure;
+        char same_site[16]; /* "Strict", "Lax", "None" */
+        char path[128];
+        char domain[128];
+    } cookies[EKA_MAX_COOKIES];
+    int         cookie_count;
 
     bool        body_set;
     char       *body;          /* owned, arena-allocated pointer */

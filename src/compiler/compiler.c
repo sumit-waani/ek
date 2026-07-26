@@ -574,9 +574,45 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
 
         /* Add parameters as locals */
         int arity = 0;
+        int required_arity = 0;
+        bool has_defaults = false;
         for (ast_node_t *p = node->as.func_decl.params; p; p = p->next) {
             symtab_add_local(func_c.current_scope, p->as.param.name, p->as.param.name_len);
             arity++;
+            if (p->as.param.default_value) {
+                has_defaults = true;
+            } else if (!has_defaults) {
+                required_arity++;
+            }
+        }
+
+        /* For parameters with default values, emit prologue code:
+         *   if param == nil then param = default_value */
+        if (has_defaults) {
+            int idx = 0;
+            for (ast_node_t *p = node->as.func_decl.params; p; p = p->next) {
+                if (p->as.param.default_value) {
+                    /* Check if param is nil */
+                    uint8_t nil_check = alloc_reg(&func_c);
+                    emit(&func_c, eka_instr_encode(OP_LOAD_NIL, nil_check, 0, 0));
+                    uint8_t cond = alloc_reg(&func_c);
+                    emit(&func_c, eka_instr_encode(OP_EQ, cond, (uint8_t)idx, nil_check));
+
+                    /* If NOT nil, skip default assignment */
+                    uint8_t jmp = (uint8_t)func_c.code_count;
+                    emit(&func_c, eka_instr_encode(OP_JUMP_IF_TRUE, cond, 0, 0));
+
+                    /* Assign default value */
+                    uint8_t def_reg = compile_expr(&func_c, p->as.param.default_value);
+                    emit(&func_c, eka_instr_encode(OP_MOVE, (uint8_t)idx, def_reg, 0));
+
+                    /* Patch jump */
+                    int16_t offset = (int16_t)(func_c.code_count - jmp - 1);
+                    func_c.code[jmp] = eka_instr_encode(OP_JUMP_IF_TRUE, cond,
+                        (uint8_t)(offset >> 8), (uint8_t)(offset & 0xFF));
+                }
+                idx++;
+            }
         }
 
         /* Compile body */
@@ -586,7 +622,7 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
         emit(&func_c, eka_instr_encode(OP_RETURN, 0, 0, 0));
 
         /* Create func object */
-        eka_func_t *f = eka_func_new((uint32_t)arity, (uint32_t)arity,
+        eka_func_t *f = eka_func_new((uint32_t)required_arity, (uint32_t)arity,
                                       func_c.code_count, func_c.constant_count,
                                       node->token.line);
 

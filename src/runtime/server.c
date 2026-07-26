@@ -590,7 +590,7 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
                        ? worker.response_state.content_type
                        : "text/html; charset=utf-8";
     } else if (eka_is_number(result) || eka_is_int(result)) {
-        static char num_buf[64];
+        char num_buf[64];
         double d = eka_is_number(result) ? eka_as_number(result)
                                          : (double)eka_as_int(result);
         int n = snprintf(num_buf, sizeof(num_buf), "%g", d);
@@ -644,17 +644,47 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
 
     int resp_status = worker.response_state.status ? worker.response_state.status : 200;
 
-    /* Build Set-Cookie header if session was created or modified */
-    char session_cookie_hdr[256] = "";
+    /* Build Set-Cookie headers: session cookie + response.cookie() cookies */
+    char cookie_hdrs[2048] = "";
+    int cookie_off = 0;
+
+    /* Session cookie */
     if (worker.session_dirty || worker.session_is_new) {
-        snprintf(session_cookie_hdr, sizeof(session_cookie_hdr),
+        cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
                  "Set-Cookie: eka_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d\r\n",
                  worker.session_id, EKA_SESSION_TTL);
     }
 
+    /* Response cookies from response.cookie() */
+    for (int ci = 0; ci < worker.response_state.cookie_count; ci++) {
+        cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
+            "Set-Cookie: %s=%s; Path=%s; SameSite=%s",
+            worker.response_state.cookies[ci].name,
+            worker.response_state.cookies[ci].value,
+            worker.response_state.cookies[ci].path,
+            worker.response_state.cookies[ci].same_site);
+        if (worker.response_state.cookies[ci].max_age >= 0) {
+            cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
+                "; Max-Age=%d", worker.response_state.cookies[ci].max_age);
+        }
+        if (worker.response_state.cookies[ci].http_only) {
+            cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
+                "; HttpOnly");
+        }
+        if (worker.response_state.cookies[ci].secure) {
+            cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
+                "; Secure");
+        }
+        if (worker.response_state.cookies[ci].domain[0]) {
+            cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off,
+                "; Domain=%s", worker.response_state.cookies[ci].domain);
+        }
+        cookie_off += snprintf(cookie_hdrs + cookie_off, sizeof(cookie_hdrs) - cookie_off, "\r\n");
+    }
+
     conn->response_data = build_response(body, body_len, resp_status,
                                           content_type,
-                                          session_cookie_hdr[0] ? session_cookie_hdr : NULL,
+                                          cookie_hdrs[0] ? cookie_hdrs : NULL,
                                           &conn->response_len);
 
     /* Teardown now (response already built) — this frees body if we didn't take ownership */

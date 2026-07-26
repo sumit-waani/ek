@@ -11,6 +11,7 @@
 /* External dependencies */
 #include <sqlite3.h>
 #include <openssl/sha.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <cmark.h>
 
@@ -57,11 +58,14 @@ static bool arg_bool(int argc, eka_value_t *args, int idx, bool default_val) {
 /* Validate arg count */
 #define CHECK_ARGC(n) do { if (argc < (n)) return eka_nil(); } while(0)
 
-/* XML/HTML escaping (returns static buffer, caller must use or copy immediately) */
-static const char *xml_escape(const char *s) {
-    static char ebuf[4096];
+/* XML/HTML escaping — returns malloc'd buffer, caller must free */
+static char *xml_escape(const char *s) {
+    size_t slen = strlen(s);
+    /* Worst case: every char becomes 6-char entity */
+    char *ebuf = malloc(slen * 6 + 1);
+    if (!ebuf) return NULL;
     size_t out = 0;
-    for (const char *p = s; *p && out < sizeof(ebuf) - 8; p++) {
+    for (const char *p = s; *p; p++) {
         switch (*p) {
         case '&':  memcpy(ebuf + out, "&amp;", 5); out += 5; break;
         case '<':  memcpy(ebuf + out, "&lt;", 4);  out += 4; break;
@@ -1006,6 +1010,77 @@ static eka_value_t response_json(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
     }
     strncpy(vm->response_state.content_type, "application/json", 63);
     vm->response_state.content_type_set = true;
+    return eka_nil();
+}
+
+static eka_value_t response_cookie(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)ctx;
+    CHECK_ARGC(2);
+    const char *name = arg_string(argc, args, 0, NULL);
+    const char *value = arg_string(argc, args, 1, "");
+    if (!name) return eka_nil();
+
+    if (vm->response_state.cookie_count >= EKA_MAX_COOKIES) return eka_nil();
+    int ci = vm->response_state.cookie_count++;
+
+    strncpy(vm->response_state.cookies[ci].name, name, 63);
+    vm->response_state.cookies[ci].name[63] = '\0';
+    strncpy(vm->response_state.cookies[ci].value, value, 255);
+    vm->response_state.cookies[ci].value[255] = '\0';
+
+    /* Defaults */
+    vm->response_state.cookies[ci].max_age = -1;  /* session cookie */
+    vm->response_state.cookies[ci].http_only = true;
+    vm->response_state.cookies[ci].secure = false;
+    strcpy(vm->response_state.cookies[ci].same_site, "Lax");
+    strcpy(vm->response_state.cookies[ci].path, "/");
+    vm->response_state.cookies[ci].domain[0] = '\0';
+
+    /* Options map (3rd arg) */
+    if (argc >= 3 && eka_obj_is_type(args[2], OBJ_MAP)) {
+        eka_map_t *opts = eka_as_map(args[2]);
+
+        eka_string_t *k;
+        eka_value_t v;
+
+        k = eka_string_intern("maxAge", 6);
+        v = eka_map_get(opts, k);
+        if (eka_is_int(v)) vm->response_state.cookies[ci].max_age = (int)eka_as_int(v);
+        else if (eka_is_number(v)) vm->response_state.cookies[ci].max_age = (int)eka_as_number(v);
+
+        k = eka_string_intern("httpOnly", 8);
+        v = eka_map_get(opts, k);
+        if (eka_is_bool(v)) vm->response_state.cookies[ci].http_only = eka_as_bool(v);
+
+        k = eka_string_intern("secure", 6);
+        v = eka_map_get(opts, k);
+        if (eka_is_bool(v)) vm->response_state.cookies[ci].secure = eka_as_bool(v);
+
+        k = eka_string_intern("sameSite", 8);
+        v = eka_map_get(opts, k);
+        if (eka_obj_is_type(v, OBJ_STRING)) {
+            strncpy(vm->response_state.cookies[ci].same_site,
+                    eka_as_string(v)->data, 15);
+            vm->response_state.cookies[ci].same_site[15] = '\0';
+        }
+
+        k = eka_string_intern("path", 4);
+        v = eka_map_get(opts, k);
+        if (eka_obj_is_type(v, OBJ_STRING)) {
+            strncpy(vm->response_state.cookies[ci].path,
+                    eka_as_string(v)->data, 127);
+            vm->response_state.cookies[ci].path[127] = '\0';
+        }
+
+        k = eka_string_intern("domain", 6);
+        v = eka_map_get(opts, k);
+        if (eka_obj_is_type(v, OBJ_STRING)) {
+            strncpy(vm->response_state.cookies[ci].domain,
+                    eka_as_string(v)->data, 127);
+            vm->response_state.cookies[ci].domain[127] = '\0';
+        }
+    }
+
     return eka_nil();
 }
 
@@ -2411,6 +2486,9 @@ static eka_value_t rss_generate(eka_vm_t *vm, void *ctx, int argc, eka_value_t *
     #undef GET_STR
 
     char buf[16384];
+    char *et = xml_escape(title);
+    char *el = xml_escape(link);
+    char *ed = xml_escape(desc);
     int out = snprintf(buf, sizeof(buf),
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<rss version=\"2.0\">\n"
@@ -2418,7 +2496,8 @@ static eka_value_t rss_generate(eka_vm_t *vm, void *ctx, int argc, eka_value_t *
         "<title>%s</title>\n"
         "<link>%s</link>\n"
         "<description>%s</description>\n",
-        xml_escape(title), xml_escape(link), xml_escape(desc));
+        et ? et : "", el ? el : "", ed ? ed : "");
+    free(et); free(el); free(ed);
 
     /* Items */
     eka_string_t *items_key = eka_string_intern("items", 5);
@@ -2440,6 +2519,9 @@ static eka_value_t rss_generate(eka_vm_t *vm, void *ctx, int argc, eka_value_t *
                 GET_ITEM(idate, "pubDate");
                 #undef GET_ITEM
 
+                char *iet = xml_escape(ititle);
+                char *iel = xml_escape(ilink);
+                char *ied = xml_escape(idesc);
                 out += snprintf(buf + out, sizeof(buf) - out,
                     "<item>\n"
                     "<title>%s</title>\n"
@@ -2447,10 +2529,9 @@ static eka_value_t rss_generate(eka_vm_t *vm, void *ctx, int argc, eka_value_t *
                     "<description>%s</description>\n"
                     "%s%s%s"
                     "</item>\n",
-                    xml_escape(ititle),
-                    xml_escape(ilink),
-                    xml_escape(idesc),
+                    iet ? iet : "", iel ? iel : "", ied ? ied : "",
                     idate[0] ? "<pubDate>" : "", idate, idate[0] ? "</pubDate>\n" : "");
+                free(iet); free(iel); free(ied);
             }
         }
     }
@@ -2489,6 +2570,7 @@ static eka_value_t sitemap_generate(eka_vm_t *vm, void *ctx, int argc, eka_value
         GU("priority", priority);
         #undef GU
 
+        char *eurl = xml_escape(url);
         out += snprintf(buf + out, sizeof(buf) - out,
             "<url>\n"
             "<loc>%s</loc>\n"
@@ -2496,10 +2578,11 @@ static eka_value_t sitemap_generate(eka_vm_t *vm, void *ctx, int argc, eka_value
             "%s%s%s"
             "%s%s%s"
             "</url>\n",
-            xml_escape(url),
+            eurl ? eurl : "",
             lastmod[0] ? "<lastmod>" : "", lastmod, lastmod[0] ? "</lastmod>\n" : "",
             changefreq[0] ? "<changefreq>" : "", changefreq, changefreq[0] ? "</changefreq>\n" : "",
             priority[0] ? "<priority>" : "", priority, priority[0] ? "</priority>\n" : "");
+        free(eurl);
     }
     out += snprintf(buf + out, sizeof(buf) - out, "</urlset>\n");
     return eka_string_val(eka_string_new(buf, (size_t)out));
@@ -2714,6 +2797,119 @@ static eka_value_t math_random_int(eka_vm_t *vm, void *ctx, int argc, eka_value_
 }
 
 /* ================================================================
+ * number.parse — parse string to number
+ * ================================================================ */
+
+static eka_value_t number_parse(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)ctx;
+    CHECK_ARGC(1);
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
+    eka_string_t *s = eka_as_string(args[0]);
+    if (s->length == 0) return eka_nil();
+
+    char *endptr = NULL;
+    double d = strtod(s->data, &endptr);
+    if (endptr == s->data || *endptr != '\0') return eka_nil();
+
+    /* Return as int if it's a whole number that fits */
+    if (d == floor(d) && d >= -35184372088832.0 && d <= 35184372088831.0) {
+        return eka_int((int64_t)d);
+    }
+    return eka_number(d);
+}
+
+/* ================================================================
+ * datetime.parse — parse date string with format
+ * ================================================================ */
+
+static eka_value_t datetime_parse(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)ctx;
+    CHECK_ARGC(2);
+    const char *str = arg_string(argc, args, 0, NULL);
+    const char *fmt = arg_string(argc, args, 1, NULL);
+    if (!str || !fmt) return eka_nil();
+
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+
+    /* Use strptime for parsing */
+    char *result = strptime(str, fmt, &t);
+    if (!result) return eka_nil();
+
+    /* Return a map with the parsed components */
+    eka_map_t *dt_map = eka_map_new(8);
+    map_set_cstr(dt_map, "year",   eka_int(t.tm_year + 1900));
+    map_set_cstr(dt_map, "month",  eka_int(t.tm_mon + 1));
+    map_set_cstr(dt_map, "day",    eka_int(t.tm_mday));
+    map_set_cstr(dt_map, "hour",   eka_int(t.tm_hour));
+    map_set_cstr(dt_map, "minute", eka_int(t.tm_min));
+    map_set_cstr(dt_map, "second", eka_int(t.tm_sec));
+
+    /* Store the raw timestamp and provide a format method */
+    time_t ts = mktime(&t);
+    map_set_cstr(dt_map, "timestamp", eka_int((int64_t)ts));
+
+    return eka_map_val(dt_map);
+}
+
+/* ================================================================
+ * crypto.hmac — HMAC computation
+ * ================================================================ */
+
+static eka_value_t crypto_hmac(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)ctx;
+    CHECK_ARGC(3);
+    const char *algo = arg_string(argc, args, 0, "sha256");
+    const char *key  = arg_string(argc, args, 1, "");
+    const char *msg  = arg_string(argc, args, 2, "");
+
+    const EVP_MD *md = NULL;
+    if (strcmp(algo, "sha256") == 0) md = EVP_sha256();
+    else if (strcmp(algo, "sha512") == 0) md = EVP_sha512();
+    else return eka_nil();
+
+    unsigned char hmac_buf[EVP_MAX_MD_SIZE];
+    unsigned int hmac_len = 0;
+    HMAC(md, key, (int)strlen(key),
+         (unsigned char *)msg, strlen(msg),
+         hmac_buf, &hmac_len);
+
+    /* Convert to hex string */
+    char *hex = malloc(hmac_len * 2 + 1);
+    if (!hex) return eka_nil();
+    for (unsigned int i = 0; i < hmac_len; i++) {
+        snprintf(hex + i * 2, 3, "%02x", hmac_buf[i]);
+    }
+    hex[hmac_len * 2] = '\0';
+
+    eka_string_t *result = eka_string_take(hex, hmac_len * 2);
+    return eka_string_val(result);
+}
+
+/* ================================================================
+ * crypto.sha512 — SHA-512 hash
+ * ================================================================ */
+
+static eka_value_t crypto_sha512(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)ctx;
+    CHECK_ARGC(1);
+    const char *input = arg_string(argc, args, 0, "");
+
+    unsigned char hash[SHA512_DIGEST_LENGTH];
+    SHA512((unsigned char *)input, strlen(input), hash);
+
+    char *hex = malloc(SHA512_DIGEST_LENGTH * 2 + 1);
+    if (!hex) return eka_nil();
+    for (int i = 0; i < SHA512_DIGEST_LENGTH; i++) {
+        snprintf(hex + i * 2, 3, "%02x", hash[i]);
+    }
+    hex[SHA512_DIGEST_LENGTH * 2] = '\0';
+
+    eka_string_t *result = eka_string_take(hex, SHA512_DIGEST_LENGTH * 2);
+    return eka_string_val(result);
+}
+
+/* ================================================================
  * Registration
  * ================================================================ */
 
@@ -2734,6 +2930,13 @@ void eka_builtins_register(eka_vm_t *vm) {
         map_set_cstr(json_map, "parse",     make_native(json_parse_fn, NULL, "parse"));
         map_set_cstr(json_map, "stringify", make_native(json_stringify_fn, NULL, "stringify"));
         eka_vm_set_global(vm, "json", eka_map_val(json_map));
+    }
+
+    /* number.parse */
+    {
+        eka_map_t *num_map = eka_map_new(4);
+        map_set_cstr(num_map, "parse", make_native(number_parse, NULL, "parse"));
+        eka_vm_set_global(vm, "number", eka_map_val(num_map));
     }
 
     /* 8. html */
@@ -2763,9 +2966,11 @@ void eka_builtins_register(eka_vm_t *vm) {
 
     /* 6. crypto */
     {
-        eka_map_t *crypto_map = eka_map_new(4);
+        eka_map_t *crypto_map = eka_map_new(8);
         map_set_cstr(crypto_map, "sha256",      make_native(crypto_sha256, NULL, "sha256"));
+        map_set_cstr(crypto_map, "sha512",      make_native(crypto_sha512, NULL, "sha512"));
         map_set_cstr(crypto_map, "randomBytes", make_native(crypto_random_bytes, NULL, "randomBytes"));
+        map_set_cstr(crypto_map, "hmac",        make_native(crypto_hmac, NULL, "hmac"));
         eka_vm_set_global(vm, "crypto", eka_map_val(crypto_map));
     }
 
@@ -2778,8 +2983,9 @@ void eka_builtins_register(eka_vm_t *vm) {
 
     /* 12. datetime */
     {
-        eka_map_t *dt_map = eka_map_new(4);
-        map_set_cstr(dt_map, "now", make_native(datetime_now, NULL, "now"));
+        eka_map_t *dt_map = eka_map_new(8);
+        map_set_cstr(dt_map, "now",   make_native(datetime_now, NULL, "now"));
+        map_set_cstr(dt_map, "parse", make_native(datetime_parse, NULL, "parse"));
         eka_vm_set_global(vm, "datetime", eka_map_val(dt_map));
     }
 
@@ -2973,6 +3179,7 @@ void eka_builtins_setup_request(eka_vm_t *vm, eka_http_request_t *req) {
     map_set_cstr(resp_map, "header",   make_native(response_header, NULL, "header"));
     map_set_cstr(resp_map, "html",     make_native(response_html, NULL, "html"));
     map_set_cstr(resp_map, "json",     make_native(response_json, NULL, "json"));
+    map_set_cstr(resp_map, "cookie",   make_native(response_cookie, NULL, "cookie"));
 
     eka_vm_set_global(vm, "response", eka_map_val(resp_map));
 }
