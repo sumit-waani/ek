@@ -300,6 +300,77 @@ static void test_template_for(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: null-coalesce ?? operator
+ * ================================================================ */
+
+static void test_null_coalesce_fallback(void) {
+    TEST("null-coalesce: null ?? \"default\" → \"default\"");
+    const char *src =
+        "let x = null\n"
+        "let y = x ?? \"default\"\n"
+        "@get /\n"
+        "  {{ y }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "null_coalesce_fallback");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "default") != NULL, "should contain 'default' (null ?? fallback)");
+    PASS();
+}
+
+static void test_null_coalesce_preserve(void) {
+    TEST("null-coalesce: \"hello\" ?? \"default\" → \"hello\"");
+    const char *src =
+        "let a = \"hello\"\n"
+        "let b = a ?? \"default\"\n"
+        "@get /\n"
+        "  {{ b }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "null_coalesce_preserve");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "hello") != NULL, "should contain 'hello' (non-null ?? fallback)");
+    CHECK(strstr(out, "default") == NULL, "should NOT contain 'default'");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -313,6 +384,8 @@ int main(void) {
     test_global_assignment();
     test_for_in_loop();
     test_template_for();
+    test_null_coalesce_fallback();
+    test_null_coalesce_preserve();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

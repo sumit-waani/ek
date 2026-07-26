@@ -287,19 +287,40 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
     }
 
     case AST_NULL_COALESCE: {
-        /* lhs ?? rhs: evaluate lhs, if not nil return lhs, else rhs */
+        /* lhs ?? rhs: evaluate lhs, if not nil return lhs, else rhs.
+         *
+         *   lhs_reg = compile(lhs)
+         *   MOVE reg, lhs_reg
+         *   LOAD_NIL nil_reg
+         *   EQ cond_reg, reg, nil_reg      -- cond = (reg == nil)
+         *   JUMP_IF_FALSE cond_reg, +N      -- if reg != nil, skip RHS
+         *   rhs_reg = compile(rhs)
+         *   MOVE reg, rhs_reg
+         *   (patch jump to here)
+         */
         uint8_t lhs = compile_expr(c, node->as.null_coalesce.lhs);
         uint8_t reg = alloc_reg(c);
-
-        /* Copy lhs to reg */
         emit(c, eka_instr_encode(OP_MOVE, reg, lhs, 0));
 
-        /* If reg != nil, jump over the rhs */
-        /* For now: just emit the rhs, no short-circuit. */
-        uint8_t rhs = compile_expr(c, node->as.null_coalesce.rhs);
+        /* Check if reg is nil */
+        uint8_t nil_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_LOAD_NIL, nil_reg, 0, 0));
+        uint8_t cond_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_EQ, cond_reg, reg, nil_reg));
 
-        /* emit: move rhs into reg — simplistic, doesn't short-circuit properly */
+        /* If reg != nil (eq is false), jump over RHS */
+        uint32_t jump_idx = c->code_count;
+        emit(c, eka_instr_encode(OP_JUMP_IF_FALSE, cond_reg, 0, 0));
+
+        /* Evaluate RHS and move into reg */
+        uint8_t rhs = compile_expr(c, node->as.null_coalesce.rhs);
         emit(c, eka_instr_encode(OP_MOVE, reg, rhs, 0));
+
+        /* Patch the jump */
+        int16_t offset = (int16_t)(c->code_count - jump_idx - 1);
+        c->code[jump_idx] = eka_instr_encode(OP_JUMP_IF_FALSE, cond_reg,
+                                              (uint8_t)(offset >> 8),
+                                              (uint8_t)(offset & 0xFF));
         return reg;
     }
 
