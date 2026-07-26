@@ -371,6 +371,44 @@ static void test_null_coalesce_preserve(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: ~= (approximate/loose equality)
+ * ================================================================ */
+
+static void test_approx_eq(void) {
+    TEST("~=: equal strings return true");
+    const char *src =
+        "let a = \"hello\"\n"
+        "let b = \"hello\"\n"
+        "let result = a ~= b\n"
+        "@get /\n"
+        "  {{ result }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "approx_eq");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "true") != NULL, "should contain 'true' (equal strings ~= equal)");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -386,6 +424,7 @@ int main(void) {
     test_template_for();
     test_null_coalesce_fallback();
     test_null_coalesce_preserve();
+    test_approx_eq();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

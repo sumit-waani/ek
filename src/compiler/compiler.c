@@ -186,7 +186,9 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
         case TOKEN_STAR:  emit(c, eka_instr_encode(OP_MUL, reg, lhs, rhs)); break;
         case TOKEN_SLASH: emit(c, eka_instr_encode(OP_DIV, reg, lhs, rhs)); break;
         case TOKEN_PERCENT: emit(c, eka_instr_encode(OP_MOD, reg, lhs, rhs)); break;
-        case TOKEN_EQ:    emit(c, eka_instr_encode(OP_EQ,  reg, lhs, rhs)); break;
+        case TOKEN_EQ:
+        case TOKEN_APPROX_EQ:  /* ~= currently same as == (strict); refine later */
+            emit(c, eka_instr_encode(OP_EQ,  reg, lhs, rhs)); break;
         case TOKEN_NEQ: {
             /* != is NOT EQ */
             uint8_t eq_reg = alloc_reg(c);
