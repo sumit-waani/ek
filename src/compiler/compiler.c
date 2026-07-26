@@ -570,6 +570,42 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
         break;
     }
 
+    case AST_WHILE_STMT: {
+        /* while cond body end
+         *
+         *   (loop_start):
+         *     cond = compile(condition)
+         *     JUMP_IF_FALSE cond, +N   -- exit if false
+         *     compile(body)
+         *     JUMP loop_start           -- loop back
+         *   (after_loop):              -- patch JUMP_IF_FALSE to here
+         */
+
+        /* Record loop start */
+        uint32_t loop_start = c->code_count;
+
+        /* Compile condition */
+        uint8_t cond = compile_expr(c, node->as.control.condition);
+
+        /* Exit jump (placeholder) */
+        uint32_t exit_jump = c->code_count;
+        emit(c, eka_instr_encode(OP_JUMP_IF_FALSE, cond, 0, 0));
+
+        /* Compile body */
+        compile_stmt(c, node->as.control.body);
+
+        /* Jump back to loop start */
+        int16_t back_offset = (int16_t)(loop_start - c->code_count - 1);
+        emit(c, eka_instr_encode(OP_JUMP, 0,
+            (uint8_t)(back_offset >> 8), (uint8_t)(back_offset & 0xFF)));
+
+        /* Patch exit jump to land here */
+        int16_t exit_offset = (int16_t)(c->code_count - exit_jump - 1);
+        c->code[exit_jump] = eka_instr_encode(OP_JUMP_IF_FALSE, cond,
+            (uint8_t)(exit_offset >> 8), (uint8_t)(exit_offset & 0xFF));
+        break;
+    }
+
     case AST_BLOCK: {
         /* Push new scope */
         scope_t *block_scope = symtab_new_scope(c->current_scope, false);
