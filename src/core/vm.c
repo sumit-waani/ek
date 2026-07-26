@@ -6,6 +6,191 @@
 #include <math.h>
 
 /* ================================================================
+ * List & Map method dispatch — native functions for .push() etc.
+ *
+ * These are called via OP_GET_PROP → OP_CALL. The target object
+ * (list or map) is passed via the native's ctx pointer.
+ * ================================================================ */
+
+/* --- List methods --- */
+
+static eka_value_t native_list_push(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    eka_list_t *list = (eka_list_t *)ctx;
+    for (int i = 0; i < argc; i++) {
+        eka_list_push(list, args[i]);
+    }
+    return eka_nil();
+}
+
+static eka_value_t native_list_pop(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)argc; (void)args;
+    eka_list_t *list = (eka_list_t *)ctx;
+    return eka_list_pop(list);
+}
+
+static eka_value_t native_list_insert(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 2) return eka_nil();
+    eka_list_t *list = (eka_list_t *)ctx;
+    int64_t idx = eka_is_int(args[0]) ? eka_as_int(args[0])
+                : eka_is_number(args[0]) ? (int64_t)eka_as_number(args[0]) : 0;
+    eka_list_insert(list, (uint32_t)idx, args[1]);
+    return eka_nil();
+}
+
+static eka_value_t native_list_removeAt(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_nil();
+    eka_list_t *list = (eka_list_t *)ctx;
+    int64_t idx = eka_is_int(args[0]) ? eka_as_int(args[0])
+                : eka_is_number(args[0]) ? (int64_t)eka_as_number(args[0]) : 0;
+    eka_list_remove_at(list, (uint32_t)idx);
+    return eka_nil();
+}
+
+static eka_value_t native_list_removeValue(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_nil();
+    eka_list_t *list = (eka_list_t *)ctx;
+    eka_value_t target = args[0];
+    for (uint32_t i = 0; i < list->length; i++) {
+        /* Compare: for objects, pointer equality; for values, bitwise */
+        bool match = false;
+        if (eka_is_obj(target) && eka_is_obj(list->items[i])) {
+            match = (eka_as_obj(target) == eka_as_obj(list->items[i]));
+        } else {
+            match = (target == list->items[i]);
+        }
+        if (match) {
+            eka_list_remove_at(list, i);
+            return eka_nil();
+        }
+    }
+    return eka_nil();
+}
+
+static eka_value_t native_list_indexOf(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_nil();
+    eka_list_t *list = (eka_list_t *)ctx;
+    eka_value_t target = args[0];
+    for (uint32_t i = 0; i < list->length; i++) {
+        bool match = false;
+        if (eka_is_obj(target) && eka_is_obj(list->items[i])) {
+            match = (eka_as_obj(target) == eka_as_obj(list->items[i]));
+        } else {
+            match = (target == list->items[i]);
+        }
+        if (match) return eka_int((int64_t)i);
+    }
+    return eka_nil();
+}
+
+static eka_value_t native_list_contains(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_bool(false);
+    eka_list_t *list = (eka_list_t *)ctx;
+    eka_value_t target = args[0];
+    for (uint32_t i = 0; i < list->length; i++) {
+        bool match = false;
+        if (eka_is_obj(target) && eka_is_obj(list->items[i])) {
+            match = (eka_as_obj(target) == eka_as_obj(list->items[i]));
+        } else {
+            match = (target == list->items[i]);
+        }
+        if (match) return eka_bool(true);
+    }
+    return eka_bool(false);
+}
+
+/* --- Map methods --- */
+
+static eka_value_t native_map_keys(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)argc; (void)args;
+    eka_map_t *map = (eka_map_t *)ctx;
+    eka_list_t *keys = eka_list_new(map->length > 0 ? map->length : 4);
+    for (uint32_t i = 0; i < map->capacity; i++) {
+        if (map->entries[i].key && !eka_map_entry_is_tombstone(map->entries[i].key)) {
+            eka_list_push(keys, eka_string_val(map->entries[i].key));
+        }
+    }
+    return eka_list_val(keys);
+}
+
+static eka_value_t native_map_values(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm; (void)argc; (void)args;
+    eka_map_t *map = (eka_map_t *)ctx;
+    eka_list_t *vals = eka_list_new(map->length > 0 ? map->length : 4);
+    for (uint32_t i = 0; i < map->capacity; i++) {
+        if (map->entries[i].key && !eka_map_entry_is_tombstone(map->entries[i].key)) {
+            eka_list_push(vals, map->entries[i].value);
+        }
+    }
+    return eka_list_val(vals);
+}
+
+static eka_value_t native_map_has(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_bool(false);
+    eka_map_t *map = (eka_map_t *)ctx;
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_bool(false);
+    return eka_bool(eka_map_has(map, eka_as_string(args[0])));
+}
+
+static eka_value_t native_map_delete_fn(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
+    (void)vm;
+    if (argc < 1) return eka_nil();
+    eka_map_t *map = (eka_map_t *)ctx;
+    if (!eka_obj_is_type(args[0], OBJ_STRING)) return eka_nil();
+    eka_map_delete(map, eka_as_string(args[0]));
+    return eka_nil();
+}
+
+/* Look up a method on a list object. Returns the bound native, or nil. */
+static eka_value_t list_method_dispatch(eka_list_t *list, eka_string_t *name) {
+    const char *n = name->data;
+    uint32_t len = name->length;
+
+    /* Fast path: length property */
+    if (len == 6 && memcmp(n, "length", 6) == 0)
+        return eka_int((int64_t)list->length);
+
+    eka_native_fn_t fn = NULL;
+    if (len == 4 && memcmp(n, "push", 4) == 0)         fn = native_list_push;
+    else if (len == 3 && memcmp(n, "pop", 3) == 0)     fn = native_list_pop;
+    else if (len == 6 && memcmp(n, "insert", 6) == 0)  fn = native_list_insert;
+    else if (len == 9 && memcmp(n, "removeAt", 9) == 0) fn = native_list_removeAt;
+    else if (len == 11 && memcmp(n, "removeValue", 11) == 0) fn = native_list_removeValue;
+    else if (len == 7 && memcmp(n, "indexOf", 7) == 0)  fn = native_list_indexOf;
+    else if (len == 8 && memcmp(n, "contains", 8) == 0) fn = native_list_contains;
+
+    if (!fn) return eka_nil();
+    eka_native_t *nat = eka_native_new(fn, (void *)list, n);
+    return eka_native_val(nat);
+}
+
+/* Look up a method on a map object. Returns the bound native, or nil. */
+static eka_value_t map_method_dispatch(eka_map_t *map, eka_string_t *name) {
+    const char *n = name->data;
+    uint32_t len = name->length;
+
+    /* Fast path: length property */
+    if (len == 6 && memcmp(n, "length", 6) == 0)
+        return eka_int((int64_t)map->length);
+
+    eka_native_fn_t fn = NULL;
+    if (len == 4 && memcmp(n, "keys", 4) == 0)          fn = native_map_keys;
+    else if (len == 6 && memcmp(n, "values", 6) == 0)   fn = native_map_values;
+    else if (len == 3 && memcmp(n, "has", 3) == 0)      fn = native_map_has;
+    else if (len == 6 && memcmp(n, "delete", 6) == 0)    fn = native_map_delete_fn;
+
+    if (!fn) return eka_nil();
+    eka_native_t *nat = eka_native_new(fn, (void *)map, n);
+    return eka_native_val(nat);
+}
+
+/* ================================================================
  * VM lifecycle
  * ================================================================ */
 
@@ -387,12 +572,16 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
                     return eka_nil();
                 }
 
+                /* Save dest register in current frame before pushing */
+                frame->dest_reg = a;
+
                 /* Push new frame */
                 eka_call_frame_t *new_frame = &vm->frames[vm->frame_count++];
                 new_frame->closure   = cl;
                 new_frame->ip        = cl->func->code;
                 new_frame->registers = arena_alloc(sizeof(eka_value_t) * EKA_MAX_REGISTERS);
                 new_frame->stack_top = new_frame->registers;
+                new_frame->dest_reg  = 0;  /* default, overwritten by nested calls */
 
                 for (int i = 0; i < EKA_MAX_REGISTERS; i++) {
                     new_frame->registers[i] = eka_nil();
@@ -428,17 +617,9 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
             if (vm->frame_count == 0) {
                 return result;
             }
-            /* Return to caller */
+            /* Return to caller — write result to the CALL instruction's dest register */
             frame = &vm->frames[vm->frame_count - 1];
-            /* Write result into the register A of the CALL instruction that
-             * triggered this call. We store it in frame->stack_top[0] as a
-             * temporary; the caller reads it after the CALL returns.
-             * 
-             * For now: store result in R(0) of the current (now-caller) frame.
-             * A more refined approach would track the destination register
-             * in the call frame.
-             */
-            frame->registers[0] = result;
+            frame->registers[frame->dest_reg] = result;
             break;
         }
 
@@ -460,9 +641,25 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
                 eka_obj_is_type(func->constants[c], OBJ_STRING)) {
                 eka_string_t *key = eka_as_string(func->constants[c]);
                 if (eka_obj_is_type(obj, OBJ_MAP)) {
-                    frame->registers[a] = eka_map_get(eka_as_map(obj), key);
+                    eka_value_t val = eka_map_get(eka_as_map(obj), key);
+                    if (!eka_is_nil(val)) {
+                        frame->registers[a] = val;
+                    } else {
+                        /* Not in map data — try map methods */
+                        frame->registers[a] = map_method_dispatch(eka_as_map(obj), key);
+                    }
+                } else if (eka_obj_is_type(obj, OBJ_LIST)) {
+                    /* List property/method dispatch */
+                    frame->registers[a] = list_method_dispatch(eka_as_list(obj), key);
+                } else if (eka_obj_is_type(obj, OBJ_STRING)) {
+                    /* String .length property */
+                    if (key->length == 6 && memcmp(key->data, "length", 6) == 0) {
+                        frame->registers[a] = eka_int((int64_t)eka_as_string(obj)->length);
+                    } else {
+                        frame->registers[a] = eka_nil();
+                    }
                 } else {
-                    /* Property access on non-map → null (fault-tolerant) */
+                    /* Property access on nil/bool/number → null (fault-tolerant) */
                     frame->registers[a] = eka_nil();
                 }
             }
@@ -523,6 +720,9 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
                 if (i < 0) i += list->length;
                 if (i >= 0 && (uint32_t)i < list->length) {
                     list->items[i] = val;
+                } else if (i >= 0 && (uint32_t)i == list->length) {
+                    /* Setting at length → append (for list literal construction) */
+                    eka_list_push(list, val);
                 }
             } else if (eka_obj_is_type(obj, OBJ_MAP) && eka_obj_is_type(idx, OBJ_STRING)) {
                 eka_map_set(eka_as_map(obj), eka_as_string(idx), val);

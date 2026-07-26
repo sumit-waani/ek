@@ -218,6 +218,88 @@ static void test_global_assignment(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: for-in loop
+ * ================================================================ */
+
+static void test_for_in_loop(void) {
+    TEST("for-in loop");
+
+    const char *src =
+        "let items = [10, 20, 30]\n"
+        "let total = 0\n"
+        "for x in items\n"
+        "  total = total + x\n"
+        "end\n"
+        "@get /\n"
+        "  {{ total }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "for_in");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "60") != NULL, "total should be 60 (10+20+30)");
+    PASS();
+}
+
+/* ================================================================
+ * Test: template @for loop
+ * ================================================================ */
+
+static void test_template_for(void) {
+    TEST("template @for loop");
+
+    const char *src =
+        "let items = [\"a\", \"b\", \"c\"]\n"
+        "@get /\n"
+        "@for item in items\n"
+        "<span>{{ item }}</span>\n"
+        "@end\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "template_for");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "<span>a</span>") != NULL, "should contain <span>a</span>");
+    CHECK(strstr(out, "<span>b</span>") != NULL, "should contain <span>b</span>");
+    CHECK(strstr(out, "<span>c</span>") != NULL, "should contain <span>c</span>");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -229,6 +311,8 @@ int main(void) {
     test_method_with_if();
     test_func_call();
     test_global_assignment();
+    test_for_in_loop();
+    test_template_for();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

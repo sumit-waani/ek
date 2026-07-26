@@ -472,27 +472,75 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
     }
 
     case AST_FOR_STMT: {
-        /* for var in iterable body [else_body] */
-        /* Push new scope for loop variable */
+        /* for var in iterable body [else_body]
+         *
+         * Compiles to index-based while loop:
+         *   R(iter) = compile(iterable)
+         *   R(idx) = 0
+         *   R(len) = R(iter).length
+         *   loop: if idx >= len → break
+         *         R(var) = R(iter)[R(idx)]
+         *         body
+         *         idx++
+         *         jump loop
+         *   end:
+         */
+
+        /* Push new scope for loop variable + temporaries */
         scope_t *loop_scope = symtab_new_scope(c->current_scope, false);
         c->current_scope = loop_scope;
 
-        /* Loop variable */
+        /* Compile iterable into a register */
+        uint8_t iter_reg = compile_expr(c, node->as.control.iterable);
+
+        /* Index counter = 0 */
+        uint8_t idx_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_LOAD_INT, idx_reg, 0, 0));
+
+        /* Get .length into a register */
+        uint8_t len_reg = alloc_reg(c);
+        uint32_t length_const = add_string_constant(c, "length", 6);
+        emit(c, eka_instr_encode(OP_GET_PROP, len_reg, iter_reg,
+                                  (uint8_t)length_const));
+
+        /* Allocate loop variable */
         sym_t *loop_var = symtab_add_local(loop_scope,
                                             node->as.control.condition->as.identifier.name,
                                             node->as.control.condition->as.identifier.name_len);
 
-        /* Compile iterable */
-        /* Compile iterable (unused in V1 for-in placeholder) */
-        (void)compile_expr(c, node->as.control.iterable);
+        /* Jump to condition check */
+        uint32_t jmp_to_check = c->code_count;
+        emit(c, eka_instr_encode(OP_JUMP, 0, 0, 0));
 
-        /* For V1: simple approach — can't really compile for-in loop
-         * without iterator support in the VM. We'll emit a placeholder. */
-        /* TODO: proper for-in compilation with OP_ITER etc. */
-        emit(c, eka_instr_encode(OP_LOAD_NIL, (uint8_t)loop_var->index, 0, 0));
+        /* --- Loop body --- */
+        uint32_t body_start = c->code_count;
 
-        /* Compile body (will be unreachable in V1) */
+        /* R(var) = R(iter)[R(idx)] */
+        emit(c, eka_instr_encode(OP_GET_INDEX, (uint8_t)loop_var->index,
+                                  iter_reg, idx_reg));
+
+        /* Compile body statements */
         compile_stmt(c, node->as.control.body);
+
+        /* idx++ */
+        uint8_t one_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_LOAD_INT, one_reg, 0, 1));
+        emit(c, eka_instr_encode(OP_ADD, idx_reg, idx_reg, one_reg));
+
+        /* --- Condition check (jumped to from before body) --- */
+        /* Patch the initial jump to land here */
+        int16_t to_check_offset = (int16_t)(c->code_count - jmp_to_check - 1);
+        c->code[jmp_to_check] = eka_instr_encode(OP_JUMP, 0,
+            (uint8_t)(to_check_offset >> 8), (uint8_t)(to_check_offset & 0xFF));
+
+        /* R(cond) = R(idx) < R(len) */
+        uint8_t cond_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_LT, cond_reg, idx_reg, len_reg));
+
+        /* Jump back to body if true */
+        int16_t back_offset = (int16_t)(body_start - c->code_count - 1);
+        emit(c, eka_instr_encode(OP_JUMP_IF_TRUE, cond_reg,
+            (uint8_t)(back_offset >> 8), (uint8_t)(back_offset & 0xFF)));
 
         /* Pop scope */
         c->current_scope = loop_scope->enclosing;
@@ -626,8 +674,133 @@ static uint8_t compile_template(compiler_t *c, ast_node_t *node) {
         }
 
         case AST_TEMPLATE_FOR: {
-            /* Compile for loop — simplified for V1 */
-            /* TODO: proper for-in template compilation */
+            /* @for var in iterable body [@else else_body] @end
+             *
+             * Same index-based loop as code for-in, but:
+             * 1. If iterable is empty/null → render else_body
+             * 2. Otherwise loop, accumulating template output
+             */
+
+            /* Compile iterable */
+            uint8_t iter_reg = compile_expr(c, n->as.control.iterable);
+
+            /* Index counter = 0 */
+            uint8_t idx_reg = alloc_reg(c);
+            emit(c, eka_instr_encode(OP_LOAD_INT, idx_reg, 0, 0));
+
+            /* Get .length */
+            uint8_t len_reg = alloc_reg(c);
+            uint32_t len_const = add_string_constant(c, "length", 6);
+            emit(c, eka_instr_encode(OP_GET_PROP, len_reg, iter_reg,
+                                      (uint8_t)len_const));
+
+            /* Push scope for loop variable */
+            scope_t *for_scope = symtab_new_scope(c->current_scope, false);
+            c->current_scope = for_scope;
+
+            sym_t *loop_var = symtab_add_local(for_scope,
+                n->as.control.condition->as.identifier.name,
+                n->as.control.condition->as.identifier.name_len);
+
+            /* Check if empty: len == 0 */
+            uint8_t zero_reg = alloc_reg(c);
+            emit(c, eka_instr_encode(OP_LOAD_INT, zero_reg, 0, 0));
+            uint8_t empty_cond = alloc_reg(c);
+            emit(c, eka_instr_encode(OP_EQ, empty_cond, len_reg, zero_reg));
+
+            uint32_t jmp_past_else = 0;
+            if (n->as.control.else_body) {
+                /* If empty → render else_body, skip loop */
+                jmp_past_else = c->code_count;
+                emit(c, eka_instr_encode(OP_JUMP_IF_FALSE, empty_cond, 0, 0));
+
+                /* Render else body */
+                uint8_t else_accum = compile_template(c, n->as.control.else_body);
+                emit(c, eka_instr_encode(OP_ADD, accum, accum, else_accum));
+
+                /* Jump past loop */
+                uint32_t jmp_past_loop = c->code_count;
+                emit(c, eka_instr_encode(OP_JUMP, 0, 0, 0));
+
+                /* Patch: if not empty, jump here (to loop) */
+                int16_t offset = (int16_t)(c->code_count - jmp_past_else - 1);
+                c->code[jmp_past_else] = eka_instr_encode(OP_JUMP_IF_FALSE, empty_cond,
+                    (uint8_t)(offset >> 8), (uint8_t)(offset & 0xFF));
+
+                /* Jump to condition check */
+                uint32_t jmp_to_check = c->code_count;
+                emit(c, eka_instr_encode(OP_JUMP, 0, 0, 0));
+
+                /* --- Loop body --- */
+                uint32_t body_start = c->code_count;
+
+                /* R(var) = R(iter)[R(idx)] */
+                emit(c, eka_instr_encode(OP_GET_INDEX, (uint8_t)loop_var->index,
+                                          iter_reg, idx_reg));
+
+                /* Render body template */
+                uint8_t body_accum = compile_template(c, n->as.control.body);
+                emit(c, eka_instr_encode(OP_ADD, accum, accum, body_accum));
+
+                /* idx++ */
+                uint8_t inc_reg = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LOAD_INT, inc_reg, 0, 1));
+                emit(c, eka_instr_encode(OP_ADD, idx_reg, idx_reg, inc_reg));
+
+                /* Condition check */
+                int16_t to_check = (int16_t)(c->code_count - jmp_to_check - 1);
+                c->code[jmp_to_check] = eka_instr_encode(OP_JUMP, 0,
+                    (uint8_t)(to_check >> 8), (uint8_t)(to_check & 0xFF));
+
+                uint8_t loop_cond = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LT, loop_cond, idx_reg, len_reg));
+                int16_t back = (int16_t)(body_start - c->code_count - 1);
+                emit(c, eka_instr_encode(OP_JUMP_IF_TRUE, loop_cond,
+                    (uint8_t)(back >> 8), (uint8_t)(back & 0xFF)));
+
+                /* Patch jump past loop */
+                int16_t past_offset = (int16_t)(c->code_count - jmp_past_loop - 1);
+                c->code[jmp_past_loop] = eka_instr_encode(OP_JUMP, 0,
+                    (uint8_t)(past_offset >> 8), (uint8_t)(past_offset & 0xFF));
+            } else {
+                /* No else body — skip loop if empty, enter if not empty */
+                uint32_t jmp_if_empty = c->code_count;
+                emit(c, eka_instr_encode(OP_JUMP_IF_TRUE, empty_cond, 0, 0));
+
+                /* Jump to condition check */
+                uint32_t jmp_to_check = c->code_count;
+                emit(c, eka_instr_encode(OP_JUMP, 0, 0, 0));
+
+                /* --- Loop body --- */
+                uint32_t body_start = c->code_count;
+                emit(c, eka_instr_encode(OP_GET_INDEX, (uint8_t)loop_var->index,
+                                          iter_reg, idx_reg));
+                uint8_t body_accum = compile_template(c, n->as.control.body);
+                emit(c, eka_instr_encode(OP_ADD, accum, accum, body_accum));
+
+                uint8_t inc_reg = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LOAD_INT, inc_reg, 0, 1));
+                emit(c, eka_instr_encode(OP_ADD, idx_reg, idx_reg, inc_reg));
+
+                /* Condition check */
+                int16_t to_check = (int16_t)(c->code_count - jmp_to_check - 1);
+                c->code[jmp_to_check] = eka_instr_encode(OP_JUMP, 0,
+                    (uint8_t)(to_check >> 8), (uint8_t)(to_check & 0xFF));
+
+                uint8_t loop_cond = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LT, loop_cond, idx_reg, len_reg));
+                int16_t back = (int16_t)(body_start - c->code_count - 1);
+                emit(c, eka_instr_encode(OP_JUMP_IF_TRUE, loop_cond,
+                    (uint8_t)(back >> 8), (uint8_t)(back & 0xFF)));
+
+                /* Patch: if empty, jump past loop */
+                int16_t skip_offset = (int16_t)(c->code_count - jmp_if_empty - 1);
+                c->code[jmp_if_empty] = eka_instr_encode(OP_JUMP_IF_TRUE, empty_cond,
+                    (uint8_t)(skip_offset >> 8), (uint8_t)(skip_offset & 0xFF));
+            }
+
+            /* Pop scope */
+            c->current_scope = for_scope->enclosing;
             break;
         }
 

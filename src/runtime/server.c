@@ -42,11 +42,48 @@ typedef struct {
 } eka_conn_t;
 
 /* ================================================================
- * Route matching
+ * Route matching — supports [param] segments
  * ================================================================ */
 
+/* Max route params per request */
+#define MAX_ROUTE_PARAMS 8
+
+typedef struct {
+    const char *name;
+    size_t      name_len;
+    const char *value;
+    size_t      value_len;
+} route_param_t;
+
+typedef struct {
+    route_param_t params[MAX_ROUTE_PARAMS];
+    int           count;
+} route_params_t;
+
+/* Match a single path segment. Returns true if segment matches.
+ * If route segment is [name], it matches any value and records the param. */
+static bool match_segment(const char *route_seg, int route_len,
+                           const char *req_seg, int req_len,
+                           route_params_t *rp) {
+    /* Check if route segment is a parameter [name] */
+    if (route_len >= 3 && route_seg[0] == '[' && route_seg[route_len - 1] == ']') {
+        /* It's a param — record name and value */
+        if (rp && rp->count < MAX_ROUTE_PARAMS) {
+            rp->params[rp->count].name = route_seg + 1;
+            rp->params[rp->count].name_len = (size_t)(route_len - 2);
+            rp->params[rp->count].value = req_seg;
+            rp->params[rp->count].value_len = (size_t)req_len;
+            rp->count++;
+        }
+        return true;
+    }
+    /* Exact segment match */
+    if (route_len != req_len) return false;
+    return memcmp(route_seg, req_seg, (size_t)route_len) == 0;
+}
+
 static int find_route(eka_compiled_program_t *prog, const char *method,
-                       const char *path) {
+                       const char *path, route_params_t *out_params) {
     eka_token_type_t expected;
     if (strcmp(method, "GET") == 0)      expected = TOKEN_AT_GET;
     else if (strcmp(method, "POST") == 0) expected = TOKEN_AT_POST;
@@ -55,14 +92,58 @@ static int find_route(eka_compiled_program_t *prog, const char *method,
     else if (strcmp(method, "PATCH") == 0) expected = TOKEN_AT_PATCH;
     else return -1;
 
-    /* Simple path match for V1: match the path string */
     for (int i = 0; i < prog->method_count; i++) {
-        if (prog->methods[i].method == expected) {
-            const char *route_path = prog->methods[i].path;
-            /* Simple exact match for now */
-            if (strcmp(route_path, path) == 0) {
-                return i;
+        if (prog->methods[i].method != expected) continue;
+        const char *route_path = prog->methods[i].path;
+
+        /* Exact match (fast path) */
+        if (strcmp(route_path, path) == 0) {
+            if (out_params) out_params->count = 0;
+            return i;
+        }
+
+        /* Segment-by-segment match with [param] support */
+        route_params_t rp;
+        rp.count = 0;
+
+        const char *rp_ptr = route_path;
+        const char *pp_ptr = path;
+        bool mismatch = false;
+
+        while (*rp_ptr || *pp_ptr) {
+            /* Find next segment in route */
+            const char *rp_end = rp_ptr;
+            while (*rp_end && *rp_end != '/') rp_end++;
+
+            /* Find next segment in path */
+            const char *pp_end = pp_ptr;
+            while (*pp_end && *pp_end != '/') pp_end++;
+
+            /* Both must have a segment (or both must be at end) */
+            if ((rp_end - rp_ptr == 0) != (pp_end - pp_ptr == 0)) {
+                mismatch = true;
+                break;
             }
+
+            if (rp_end - rp_ptr == 0) break;  /* both at end */
+
+            if (!match_segment(rp_ptr, (int)(rp_end - rp_ptr),
+                               pp_ptr, (int)(pp_end - pp_ptr), &rp)) {
+                mismatch = true;
+                break;
+            }
+
+            rp_ptr = rp_end;
+            pp_ptr = pp_end;
+            /* Skip slash */
+            if (*rp_ptr == '/') rp_ptr++;
+            if (*pp_ptr == '/') pp_ptr++;
+        }
+
+        if (!mismatch && !*rp_ptr && !*pp_ptr) {
+            /* Full match */
+            if (out_params) *out_params = rp;
+            return i;
         }
     }
     return -1;
@@ -311,11 +392,83 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     }
 
     /* Find matching route */
-    int midx = find_route(s->prog, req->method, req->path);
+    route_params_t rp;
+    rp.count = 0;
+    int midx = find_route(s->prog, req->method, req->path, &rp);
 
     if (midx < 0) {
-        /* Check for static file */
-        /* TODO: static file serving */
+        /* Try static file serving from static_dir */
+        const char *req_path = req->path;
+
+        /* Security: block hidden files and directory traversal */
+        if (strstr(req_path, "/.") || strstr(req_path, "..")) {
+            const char *body = "403 Forbidden";
+            conn->response_data = build_response(body, strlen(body), 403,
+                                                  "text/plain", NULL, &conn->response_len);
+            return;
+        }
+
+        /* Strip leading slash */
+        if (req_path[0] == '/') req_path++;
+
+        /* Default to index.html for "/" */
+        const char *file_path = req_path;
+        char path_buf[512];
+        if (req_path[0] == '\0') {
+            file_path = "index.html";
+        }
+
+        /* Build full path: static_dir/req_path */
+        snprintf(path_buf, sizeof(path_buf), "%s/%s", s->static_dir, file_path);
+
+        FILE *f = fopen(path_buf, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+
+            char *file_buf = malloc((size_t)file_size + 1);
+            if (file_buf) {
+                size_t nread = fread(file_buf, 1, (size_t)file_size, f);
+                file_buf[nread] = '\0';
+                fclose(f);
+
+                /* Determine MIME type from extension */
+                const char *mime = "application/octet-stream";
+                const char *ext = strrchr(path_buf, '.');
+                if (ext) {
+                    if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0) mime = "text/html; charset=utf-8";
+                    else if (strcmp(ext, ".css") == 0) mime = "text/css; charset=utf-8";
+                    else if (strcmp(ext, ".js") == 0) mime = "application/javascript; charset=utf-8";
+                    else if (strcmp(ext, ".json") == 0) mime = "application/json";
+                    else if (strcmp(ext, ".png") == 0) mime = "image/png";
+                    else if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) mime = "image/jpeg";
+                    else if (strcmp(ext, ".gif") == 0) mime = "image/gif";
+                    else if (strcmp(ext, ".svg") == 0) mime = "image/svg+xml";
+                    else if (strcmp(ext, ".ico") == 0) mime = "image/x-icon";
+                    else if (strcmp(ext, ".woff") == 0) mime = "font/woff";
+                    else if (strcmp(ext, ".woff2") == 0) mime = "font/woff2";
+                    else if (strcmp(ext, ".xml") == 0) mime = "application/xml";
+                    else if (strcmp(ext, ".txt") == 0) mime = "text/plain; charset=utf-8";
+                    else if (strcmp(ext, ".pdf") == 0) mime = "application/pdf";
+                    else if (strcmp(ext, ".webp") == 0) mime = "image/webp";
+                    else if (strcmp(ext, ".mp4") == 0) mime = "video/mp4";
+                    else if (strcmp(ext, ".webm") == 0) mime = "video/webm";
+                }
+
+                /* Build response with cache headers */
+                char extra_hdrs[256];
+                snprintf(extra_hdrs, sizeof(extra_hdrs),
+                         "Cache-Control: public, max-age=3600\r\n");
+                conn->response_data = build_response(file_buf, nread, 200,
+                                                      mime, extra_hdrs, &conn->response_len);
+                free(file_buf);
+                return;
+            }
+            fclose(f);
+        }
+
+        /* No static file found — 404 */
         const char *body = "404 Not Found";
         conn->response_data = build_response(body, strlen(body), 404,
                                               "text/plain", NULL, &conn->response_len);
@@ -330,6 +483,15 @@ static void handle_request(eka_conn_t *conn, eka_http_request_t *req) {
     eka_vm_t worker;
     eka_vm_init(&worker);                    /* creates own arenas, sets eka_gc_current_vm */
     eka_vm_clone_globals(&worker, s->vm);   /* copy globals from master */
+
+    /* Copy route params into worker VM */
+    worker.route_param_count = rp.count;
+    for (int pi = 0; pi < rp.count; pi++) {
+        worker.route_params[pi].name = rp.params[pi].name;
+        worker.route_params[pi].name_len = rp.params[pi].name_len;
+        worker.route_params[pi].value = rp.params[pi].value;
+        worker.route_params[pi].value_len = rp.params[pi].value_len;
+    }
 
     /* Set up per-request builtins (request, response) */
     eka_builtins_setup_request(&worker, req);

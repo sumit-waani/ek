@@ -41,6 +41,7 @@ typedef struct {
     eka_instr_t   *ip;           /* instruction pointer within closure->func->code */
     eka_value_t   *registers;    /* base of register array for this frame */
     eka_value_t   *stack_top;    /* for passing args to next call */
+    uint8_t        dest_reg;     /* destination register in caller for return value */
 } eka_call_frame_t;
 
 /* Per-DB connection state */
@@ -89,6 +90,16 @@ typedef struct eka_vm_t {
     /* --- Per-request context --- */
     eka_http_request_t   *current_req;
     eka_response_state_t  response_state;
+
+    /* --- Route parameters ([id] etc.) --- */
+    #define EKA_MAX_ROUTE_PARAMS 8
+    struct {
+        const char *name;
+        size_t      name_len;
+        const char *value;
+        size_t      value_len;
+    } route_params[EKA_MAX_ROUTE_PARAMS];
+    int route_param_count;
 
     /* --- SQLite connections --- */
     eka_db_conn_t    db_conns[EKA_MAX_DB_CONNS];

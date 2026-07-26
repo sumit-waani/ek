@@ -11,6 +11,11 @@ scope_t *symtab_new_scope(scope_t *enclosing, bool is_function) {
     scope->enclosing   = enclosing;
     scope->is_function = is_function;
     scope->depth       = enclosing ? enclosing->depth + 1 : 0;
+    /* Non-function scopes continue the parent's register allocation.
+     * Function scopes start at 0 (they get their own register file). */
+    if (enclosing && !is_function) {
+        scope->local_count = enclosing->local_count;
+    }
     return scope;
 }
 

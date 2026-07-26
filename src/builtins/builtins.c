@@ -1032,8 +1032,19 @@ static eka_value_t request_json_fn(eka_vm_t *vm, void *ctx, int argc, eka_value_
 }
 
 static eka_value_t request_param(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx;
-    /* Route parameters not yet implemented */
+    (void)ctx;
+    if (argc < 1 || !eka_obj_is_type(args[0], OBJ_STRING)) {
+        return (argc >= 2) ? args[1] : eka_nil();
+    }
+    eka_string_t *name = eka_as_string(args[0]);
+    /* Search route params in VM */
+    for (int i = 0; i < vm->route_param_count; i++) {
+        if (vm->route_params[i].name_len == name->length &&
+            memcmp(vm->route_params[i].name, name->data, name->length) == 0) {
+            return eka_string_val(eka_string_new(vm->route_params[i].value,
+                                                  vm->route_params[i].value_len));
+        }
+    }
     return (argc >= 2) ? args[1] : eka_nil();
 }
 
