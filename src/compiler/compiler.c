@@ -404,6 +404,37 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
         return val;
     }
 
+    case AST_INTERPOLATION: {
+        /* "Hello ${name}!" → concatenate text and expression parts.
+         *   accum = ""
+         *   for each part:
+         *     if text: accum = accum + text
+         *     if expr: accum = accum + ("" + expr)  -- coerces to string
+         */
+        uint8_t accum = alloc_reg(c);
+        uint32_t empty_idx = add_string_constant(c, "", 0);
+        emit(c, eka_instr_encode(OP_LOAD_CONST, accum, (uint8_t)empty_idx, 0));
+
+        for (ast_node_t *part = node->as.interpolation.parts; part; part = part->next) {
+            if (part->type == AST_LITERAL && part->as.literal.literal_type == TOKEN_STRING) {
+                /* Text part — add as string constant */
+                uint32_t str_idx = add_string_constant(c, part->token.start, part->token.length);
+                uint8_t str_reg = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LOAD_CONST, str_reg, (uint8_t)str_idx, 0));
+                emit(c, eka_instr_encode(OP_ADD, accum, accum, str_reg));
+            } else {
+                /* Expression part — compile and coerce to string */
+                uint8_t expr_reg = compile_expr(c, part);
+                uint8_t empty_reg = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_LOAD_CONST, empty_reg, (uint8_t)empty_idx, 0));
+                uint8_t str_reg = alloc_reg(c);
+                emit(c, eka_instr_encode(OP_ADD, str_reg, empty_reg, expr_reg));
+                emit(c, eka_instr_encode(OP_ADD, accum, accum, str_reg));
+            }
+        }
+        return accum;
+    }
+
     default:
         c->had_error = true;
         c->error_msg = "unsupported expression type";

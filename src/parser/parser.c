@@ -252,8 +252,122 @@ static ast_node_t *parse_expr(eka_parser_t *parser) {
  * Prefix parsers
  * ================================================================ */
 
+/* Helper: find the matching } for a ${...} expression, handling nested braces.
+ * Returns pointer past the closing }, or NULL if not found. */
+static const char *find_interp_end(const char *p, const char *end) {
+    int depth = 1;
+    while (p < end && depth > 0) {
+        if (*p == '{') depth++;
+        else if (*p == '}') {
+            depth--;
+            if (depth == 0) return p + 1;
+        }
+        /* Skip string literals inside the expression */
+        else if (*p == '"') {
+            p++;
+            while (p < end && *p != '"') {
+                if (*p == '\\') p++;
+                p++;
+            }
+            if (p < end) p++; /* skip closing quote */
+            continue;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+/* Parse a string with ${expr} interpolation into an AST_INTERPOLATION node.
+ * The token's start/length point to the raw string content between quotes. */
+static ast_node_t *parse_interp_string(eka_parser_t *parser, eka_token_t token) {
+    const char *src = token.start;
+    size_t len = token.length;
+    const char *end = src + len;
+    const char *p = src;
+
+    ast_node_t *interp = ast_new(AST_INTERPOLATION, token);
+    ast_node_t *parts = NULL;
+
+    while (p < end) {
+        /* Find next ${ */
+        const char *dollar = p;
+        while (dollar < end && !(dollar[0] == '$' && dollar + 1 < end && dollar[1] == '{')) {
+            dollar++;
+        }
+
+        /* Text before ${ */
+        if (dollar > p) {
+            ast_node_t *text = ast_new(AST_LITERAL, token);
+            text->as.literal.literal_type = TOKEN_STRING;
+            /* Create a synthetic token pointing to the text slice */
+            eka_token_t text_tok = token;
+            text_tok.start = p;
+            text_tok.length = (size_t)(dollar - p);
+            text->token = text_tok;
+            parts = ast_append(parts, text);
+        }
+
+        if (dollar >= end) break;
+
+        /* Find matching } */
+        const char *expr_start = dollar + 2; /* after ${ */
+        const char *expr_end = find_interp_end(expr_start, end);
+        if (!expr_end) {
+            /* Unmatched ${ — treat rest as literal text */
+            ast_node_t *text = ast_new(AST_LITERAL, token);
+            text->as.literal.literal_type = TOKEN_STRING;
+            eka_token_t text_tok = token;
+            text_tok.start = dollar;
+            text_tok.length = (size_t)(end - dollar);
+            text->token = text_tok;
+            parts = ast_append(parts, text);
+            break;
+        }
+
+        /* Parse the expression inside ${...} */
+        size_t expr_len = (size_t)(expr_end - 1 - expr_start); /* exclude closing } */
+        /* Allocate expr string — intentionally NOT freed because
+         * AST nodes reference into it (identifier names, etc.).
+         * Small per-interpolation allocation, acceptable for V1. */
+        char *expr_str = malloc(expr_len + 1);
+        memcpy(expr_str, expr_start, expr_len);
+        expr_str[expr_len] = '\0';
+
+        eka_parser_t sub_parser;
+        eka_parser_init(&sub_parser, expr_str);
+        ast_node_t *expr = parse_expr(&sub_parser);
+
+        if (expr) {
+            parts = ast_append(parts, expr);
+        }
+        /* Don't free expr_str — AST nodes reference into it */
+
+        p = expr_end; /* after } */
+    }
+
+    interp->as.interpolation.parts = parts;
+    return interp;
+}
+
 static ast_node_t *parse_literal(eka_parser_t *parser, ast_node_t *left) {
     (void)left;
+
+    /* Check if this is a string with ${...} interpolation */
+    if (parser->previous.type == TOKEN_STRING) {
+        const char *p = parser->previous.start;
+        size_t len = parser->previous.length;
+        bool has_interp = false;
+        for (size_t i = 0; i + 1 < len; i++) {
+            if (p[i] == '$' && p[i + 1] == '{') {
+                has_interp = true;
+                break;
+            }
+        }
+        if (has_interp) {
+            return parse_interp_string(parser, parser->previous);
+        }
+    }
+
     ast_node_t *node = ast_new(AST_LITERAL, parser->previous);
     node->as.literal.literal_type = parser->previous.type;
     return node;

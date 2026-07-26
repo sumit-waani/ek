@@ -491,6 +491,50 @@ static void test_try_catch(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: string interpolation ${expr}
+ * ================================================================ */
+
+static void test_string_interp(void) {
+    TEST("string interpolation: \"Hello ${name}!\"");
+    const char *src =
+        "let name = \"World\"\n"
+        "let greeting = \"Hello, ${name}!\"\n"
+        "@get /\n"
+        "  {{ greeting }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    /* Verify the global variable 'greeting' was set correctly */
+    eka_string_t *key = eka_string_intern("greeting", 8);
+    eka_value_t val = eka_map_get(vm.globals, key);
+    CHECK(eka_obj_is_type(val, OBJ_STRING), "greeting should be a string");
+    const char *out = eka_as_string(val)->data;
+    CHECK(strstr(out, "Hello, World!") != NULL, "greeting should be 'Hello, World!'");
+
+    eka_value_t result = execute_method(&vm, prog, 0, "string_interp");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *html = eka_as_string(result)->data;
+    CHECK(strstr(html, "Hello, World!") != NULL, "should contain 'Hello, World!'");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -509,6 +553,7 @@ int main(void) {
     test_approx_eq();
     test_while_loop();
     test_try_catch();
+    test_string_interp();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
