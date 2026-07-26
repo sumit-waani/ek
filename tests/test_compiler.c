@@ -450,6 +450,47 @@ static void test_while_loop(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: try/catch (V1: try body executes, catch is no-op)
+ * ================================================================ */
+
+static void test_try_catch(void) {
+    TEST("try/catch: try body executes");
+    const char *src =
+        "let x = 0\n"
+        "try\n"
+        "  x = 42\n"
+        "catch err\n"
+        "  x = 99\n"
+        "end\n"
+        "@get /\n"
+        "  {{ x }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "try_catch");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "42") != NULL, "x should be 42 (try body executed)");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -467,6 +508,7 @@ int main(void) {
     test_null_coalesce_preserve();
     test_approx_eq();
     test_while_loop();
+    test_try_catch();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

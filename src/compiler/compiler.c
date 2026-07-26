@@ -606,6 +606,15 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
         break;
     }
 
+    case AST_TRY_STMT: {
+        /* V1: compile and execute the try body.
+         * The catch handler is not yet functional — VM has no exception
+         * mechanism. This is better than silently doing nothing.
+         * TODO: add setjmp/longjmp or error flag for real try/catch. */
+        compile_stmt(c, node->as.try_stmt.body);
+        break;
+    }
+
     case AST_BLOCK: {
         /* Push new scope */
         scope_t *block_scope = symtab_new_scope(c->current_scope, false);
