@@ -278,13 +278,54 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
     }
 
     case AST_NULL_SAFE: {
-        /* obj?.prop → temp = obj; if temp == nil: nil else temp.prop */
-        /* For now, just compile as property access (will error on null at runtime) */
+        /* obj?.prop → if obj == nil: nil else obj.prop
+         *
+         *   obj_reg = compile(obj)
+         *   reg = alloc_reg()              -- result register (shared)
+         *   LOAD_NIL nil_reg
+         *   EQ cond_reg, obj_reg, nil_reg
+         *   JUMP_IF_TRUE cond_reg, +N      -- if nil, skip to reg=nil
+         *   GET_PROP reg, obj_reg, prop    -- reg = obj.prop
+         *   JUMP +M                         -- skip nil assignment
+         *   (patch JUMP_IF_TRUE here)
+         *   LOAD_NIL reg                    -- reg = nil
+         *   (patch JUMP +M here)
+         *   return reg
+         */
         uint8_t obj = compile_expr(c, node->as.property.obj);
+
+        /* Allocate result register up front — used by both branches */
+        uint8_t reg = alloc_reg(c);
+
+        /* Check if obj is nil */
+        uint8_t nil_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_LOAD_NIL, nil_reg, 0, 0));
+        uint8_t cond_reg = alloc_reg(c);
+        emit(c, eka_instr_encode(OP_EQ, cond_reg, obj, nil_reg));
+
+        /* If nil, jump to nil assignment */
+        uint32_t nil_jump = c->code_count;
+        emit(c, eka_instr_encode(OP_JUMP_IF_TRUE, cond_reg, 0, 0));
+
+        /* Non-nil path: normal property access into reg */
         uint32_t key_idx = add_string_constant(c, node->as.property.prop,
                                                 node->as.property.prop_len);
-        uint8_t reg = alloc_reg(c);
         emit(c, eka_instr_encode(OP_GET_PROP, reg, obj, (uint8_t)key_idx));
+
+        /* Jump past nil assignment */
+        uint32_t skip_jump = c->code_count;
+        emit(c, eka_instr_encode(OP_JUMP, 0, 0, 0));
+
+        /* Nil path: reg = nil */
+        int16_t nil_offset = (int16_t)(c->code_count - nil_jump - 1);
+        c->code[nil_jump] = eka_instr_encode(OP_JUMP_IF_TRUE, cond_reg,
+            (uint8_t)(nil_offset >> 8), (uint8_t)(nil_offset & 0xFF));
+        emit(c, eka_instr_encode(OP_LOAD_NIL, reg, 0, 0));
+
+        /* Patch skip jump → here */
+        int16_t skip_offset = (int16_t)(c->code_count - skip_jump - 1);
+        c->code[skip_jump] = eka_instr_encode(OP_JUMP, 0,
+            (uint8_t)(skip_offset >> 8), (uint8_t)(skip_offset & 0xFF));
         return reg;
     }
 

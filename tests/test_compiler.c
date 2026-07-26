@@ -535,6 +535,81 @@ static void test_string_interp(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: null-safe ?. access
+ * ================================================================ */
+
+static void test_null_safe(void) {
+    TEST("null-safe: null?.prop → null (no crash)");
+    const char *src =
+        "let x = null\n"
+        "let y = x?.name\n"
+        "@get /\n"
+        "  {{ y ?? \"was-null\" }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    /* Verify y is nil (null-safe on null should return nil) */
+    eka_string_t *key = eka_string_intern("y", 1);
+    eka_value_t val = eka_map_get(vm.globals, key);
+    CHECK(eka_is_nil(val), "y should be nil (null?.name)");
+
+    eka_value_t result = execute_method(&vm, prog, 0, "null_safe");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "was-null") != NULL, "should contain 'was-null' (null ?? fallback)");
+    PASS();
+}
+
+static void test_null_safe_on_value(void) {
+    TEST("null-safe: {name:\"Alice\"}?.name → \"Alice\"");
+    const char *src =
+        "let user = {name: \"Alice\"}\n"
+        "let y = user?.name\n"
+        "@get /\n"
+        "  {{ y }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "null_safe_val");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "Alice") != NULL, "should contain 'Alice'");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -554,6 +629,8 @@ int main(void) {
     test_while_loop();
     test_try_catch();
     test_string_interp();
+    test_null_safe();
+    test_null_safe_on_value();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
