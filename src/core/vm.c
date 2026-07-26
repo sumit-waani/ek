@@ -494,9 +494,15 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
             break;
         }
 
-        case OP_NEG:
-            frame->registers[a] = eka_number(-value_to_double(frame->registers[b]));
+        case OP_NEG: {
+            eka_value_t val = frame->registers[b];
+            if (eka_is_int(val)) {
+                frame->registers[a] = eka_int(-eka_as_int(val));
+            } else {
+                frame->registers[a] = eka_number(-value_to_double(val));
+            }
             break;
+        }
 
         /* --- Comparison --- */
 

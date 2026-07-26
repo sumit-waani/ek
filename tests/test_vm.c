@@ -533,6 +533,58 @@ static void test_int_arithmetic(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: OP_NEG preserves int type
+ * ================================================================ */
+
+static void test_neg_int(void) {
+    TEST("NEG preserves int type (-5 is int)");
+
+    eka_value_t consts[] = { eka_int(5) };
+    uint32_t code[] = {
+        eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),  /* R0 = 5 */
+        eka_instr_encode(OP_NEG, 1, 0, 0),          /* R1 = -R0 */
+        eka_instr_encode(OP_RETURN, 1, 0, 0),
+    };
+
+    eka_func_t *func = make_func(code, 3, consts, 1);
+    eka_closure_t *cl = make_closure(func);
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    const char *error = NULL;
+    eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+
+    CHECK(error == NULL, "no error");
+    CHECK(eka_is_int(result), "-5 should be int (not float)");
+    CHECK(eka_as_int(result) == -5, "-5 should equal -5");
+    PASS();
+}
+
+static void test_neg_float(void) {
+    TEST("NEG on float stays float (-3.14)");
+
+    eka_value_t consts[] = { eka_number(3.14) };
+    uint32_t code[] = {
+        eka_instr_encode(OP_LOAD_CONST, 0, 0, 0),  /* R0 = 3.14 */
+        eka_instr_encode(OP_NEG, 1, 0, 0),          /* R1 = -R0 */
+        eka_instr_encode(OP_RETURN, 1, 0, 0),
+    };
+
+    eka_func_t *func = make_func(code, 3, consts, 1);
+    eka_closure_t *cl = make_closure(func);
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    const char *error = NULL;
+    eka_value_t result = eka_vm_execute_init(&vm, cl, &error);
+
+    CHECK(error == NULL, "no error");
+    CHECK(eka_is_number(result), "-3.14 should be float");
+    CHECK(eka_as_number(result) < -3.13 && eka_as_number(result) > -3.15, "-3.14 check");
+    PASS();
+}
+
 int main(void) {
     printf("VM tests:\n");
     eka_vm_init(&scratch_vm);  /* sets eka_gc_current_vm for arena_alloc */
@@ -549,6 +601,8 @@ int main(void) {
     test_map_has_method();
     test_string_length();
     test_int_arithmetic();
+    test_neg_int();
+    test_neg_float();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
