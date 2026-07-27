@@ -541,21 +541,58 @@ static ast_node_t *parse_call(eka_parser_t *parser, ast_node_t *left) {
     eka_token_t paren = parser->previous;
     ast_node_t *node = ast_new(AST_CALL, paren);
     node->as.call.callee = left;
+    node->as.call.named_args = false;
 
     if (match(parser, TOKEN_RPAREN)) {
         node->as.call.args = NULL;
         return node;
     }
 
-    /* Parse arguments: named params: name: value */
+    /* Parse first argument as expression */
     ast_node_t *first = parse_expr(parser);
-    node->as.call.args = first;
 
-    while (match(parser, TOKEN_COMMA)) {
-        skip_newlines(parser);
-        if (check(parser, TOKEN_RPAREN)) break;
-        ast_node_t *arg = parse_expr(parser);
-        node->as.call.args = ast_append(node->as.call.args, arg);
+    /* Check if it's a named argument: identifier followed by : */
+    if (first && first->type == AST_IDENTIFIER && match(parser, TOKEN_COLON)) {
+        /* Named argument: name: value */
+        node->as.call.named_args = true;
+        ast_node_t *value = parse_expr(parser);
+
+        ast_node_t *arg = ast_new(AST_BINARY, first->token);
+        arg->as.binary.op = TOKEN_COLON;
+        arg->as.binary.lhs = first;
+        arg->as.binary.rhs = value;
+        node->as.call.args = arg;
+
+        /* Parse remaining named arguments */
+        while (match(parser, TOKEN_COMMA)) {
+            skip_newlines(parser);
+            if (check(parser, TOKEN_RPAREN)) break;
+
+            /* Next arg must also be named */
+            ast_node_t *name_expr = parse_expr(parser);
+            if (!name_expr || name_expr->type != AST_IDENTIFIER || !match(parser, TOKEN_COLON)) {
+                parser->had_error = true;
+                parser->error_message = "all arguments must be named when using named parameters";
+                return node;
+            }
+            ast_node_t *val = parse_expr(parser);
+
+            ast_node_t *a = ast_new(AST_BINARY, name_expr->token);
+            a->as.binary.op = TOKEN_COLON;
+            a->as.binary.lhs = name_expr;
+            a->as.binary.rhs = val;
+            node->as.call.args = ast_append(node->as.call.args, a);
+        }
+    } else {
+        /* Positional argument */
+        node->as.call.args = first;
+
+        while (match(parser, TOKEN_COMMA)) {
+            skip_newlines(parser);
+            if (check(parser, TOKEN_RPAREN)) break;
+            ast_node_t *arg = parse_expr(parser);
+            node->as.call.args = ast_append(node->as.call.args, arg);
+        }
     }
 
     consume(parser, TOKEN_RPAREN, "expected ')'");

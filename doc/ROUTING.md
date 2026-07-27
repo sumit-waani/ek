@@ -31,6 +31,7 @@ let secret = env.get("EKA_SECRET", crypto.randomBytes(32))
 Init variables are:
 - Accessible in all request handlers (global scope)
 - Read-only from request scope (cannot be mutated across requests)
+- **Snapshot copies:** Each request handler receives a copy of init variables. Mutations in a handler are discarded after the response. Use `cache`, `session`, or `db` for shared mutable state.
 
 `@do` blocks at top level are **not allowed.** For init code, write bare expressions. `@do` is only valid inside method blocks.
 

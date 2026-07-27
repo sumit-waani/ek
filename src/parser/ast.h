@@ -96,6 +96,7 @@ struct ast_node_t {
         struct {
             ast_node_t *callee;
             ast_node_t *args;        /* linked list */
+            bool        named_args;  /* true if arguments use name: value syntax */
         } call;
 
         /* AST_INDEX */

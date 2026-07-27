@@ -251,8 +251,23 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
         /* Compile arguments */
         uint8_t arg_regs[16];
         int arg_count = 0;
-        for (ast_node_t *a = node->as.call.args; a && arg_count < 16; a = a->next) {
-            arg_regs[arg_count++] = compile_expr(c, a);
+
+        if (node->as.call.named_args) {
+            /* Named arguments: extract values from name: value pairs */
+            for (ast_node_t *a = node->as.call.args; a && arg_count < 16; a = a->next) {
+                /* Each arg is AST_BINARY with TOKEN_COLON: lhs=name, rhs=value */
+                if (a->type == AST_BINARY && a->as.binary.op == TOKEN_COLON) {
+                    arg_regs[arg_count++] = compile_expr(c, a->as.binary.rhs);
+                } else {
+                    /* Shouldn't happen if parser is correct, but handle gracefully */
+                    arg_regs[arg_count++] = compile_expr(c, a);
+                }
+            }
+        } else {
+            /* Positional arguments */
+            for (ast_node_t *a = node->as.call.args; a && arg_count < 16; a = a->next) {
+                arg_regs[arg_count++] = compile_expr(c, a);
+            }
         }
 
         /* Place args in consecutive registers starting after callee */

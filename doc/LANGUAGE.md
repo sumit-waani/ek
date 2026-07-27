@@ -23,6 +23,7 @@ const PI = 3.14159       -- immutable, cannot reassign
 - `let` at init scope is effectively read-only from request scope (the binding cannot be changed by request handlers).
 - `let` at request scope is request-local — lives and dies with the request.
 - `const` is always immutable — cannot be reassigned anywhere.
+- **Init variables are snapshots:** Each request handler receives a copy of init-scope variables. Mutations in a handler (e.g., `counter = counter + 1`) only affect that request's copy and are discarded after the response. Use `cache`, `session`, or `db` for shared mutable state across requests.
 
 Variables must be declared before use. Undeclared variables are a compile-time error caught by `eka check`.
 
@@ -153,7 +154,7 @@ let mixed = [1, "hello", true, {name: "Alice"}]
 | `items.indexOf(val)` | number or null | First index of value, or null |
 | `items.contains(val)` | bool | Whether value exists in list |
 
-**Design note:** Mutation methods (`push`, `pop`, `insert`, `removeAt`, `removeValue`) return `null` to prevent accidental method chaining. If you need the value after mutation, access it explicitly.
+**Design note:** Mutation methods (`push`, `insert`, `removeAt`, `removeValue`) return `null` to prevent accidental method chaining. `pop()` is the exception — it returns the removed value (or `null` if the list is empty). If you need the value from other mutation methods, access it explicitly.
 
 List iteration uses `for` loops or `@for` in templates.
 
@@ -469,7 +470,9 @@ For dynamic values in `<script>`, use vanilla JS to read from `window.e` or your
 
 ### Fault Tolerance
 
-If an expression inside `{{ }}` throws (null reference, out of bounds, etc.), it renders as an empty string and logs a warning. The page continues rendering. This prevents one broken expression from 500-ing the entire page.
+Template interpolation handles null references gracefully. If an expression inside `{{ }}` evaluates to `null` (nil), it renders as an empty string. Property access on `null` (e.g., `{{ user.name }}` when `user` is null) also returns `null` and renders as empty. The page continues rendering.
+
+**Note:** Runtime errors (division by zero, calling non-functions, stack overflow) still return a 500 error. Fault tolerance applies only to null/nil values, not to all errors.
 
 ## Interpolation: Complete Rules
 

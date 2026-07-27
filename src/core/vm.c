@@ -335,6 +335,43 @@ static double value_to_double(eka_value_t v) {
     return 0.0;
 }
 
+/* Try to parse a string value as a number.
+ * Returns true if successful, false otherwise.
+ * If successful, *out is set to the parsed value and *is_int is set accordingly. */
+static bool try_parse_number(eka_value_t v, double *out, bool *is_int) {
+    if (eka_is_int(v)) {
+        *out = (double)eka_as_int(v);
+        *is_int = true;
+        return true;
+    }
+    if (eka_is_number(v)) {
+        *out = eka_as_number(v);
+        *is_int = false;
+        return true;
+    }
+    if (eka_obj_is_type(v, OBJ_STRING)) {
+        eka_string_t *s = eka_as_string(v);
+        if (s->length == 0) return false;
+
+        char *end;
+        double d = strtod(s->data, &end);
+
+        /* Check if entire string was consumed */
+        if (end != s->data + s->length) return false;
+
+        /* Check if it's an integer */
+        if (d == floor(d) && d >= -35184372088832.0 && d <= 35184372088831.0) {
+            *out = d;
+            *is_int = true;
+        } else {
+            *out = d;
+            *is_int = false;
+        }
+        return true;
+    }
+    return false;
+}
+
 /* ================================================================
  * Error helper
  * ================================================================ */
@@ -420,9 +457,24 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
         case OP_ADD: {
             eka_value_t lhs = frame->registers[b];
             eka_value_t rhs = frame->registers[c];
-            /* String concatenation if either operand is a string */
-            if (eka_obj_is_type(lhs, OBJ_STRING) || eka_obj_is_type(rhs, OBJ_STRING)) {
-                /* Convert both to string */
+
+            /* Try numeric coercion first */
+            double l_num, r_num;
+            bool l_int, r_int;
+            bool l_is_num = try_parse_number(lhs, &l_num, &l_int);
+            bool r_is_num = try_parse_number(rhs, &r_num, &r_int);
+
+            if (l_is_num && r_is_num) {
+                /* Both are numeric (or numeric strings) — do arithmetic */
+                double result = l_num + r_num;
+                if (l_int && r_int && result == floor(result) &&
+                    result >= -35184372088832.0 && result <= 35184372088831.0) {
+                    frame->registers[a] = eka_int((int64_t)result);
+                } else {
+                    frame->registers[a] = eka_number(result);
+                }
+            } else if (eka_obj_is_type(lhs, OBJ_STRING) || eka_obj_is_type(rhs, OBJ_STRING)) {
+                /* At least one is a non-numeric string — concatenate */
                 eka_string_t *sl = eka_obj_is_type(lhs, OBJ_STRING)
                     ? eka_as_string(lhs) : eka_value_to_string(lhs);
                 eka_string_t *sr = eka_obj_is_type(rhs, OBJ_STRING)
@@ -430,13 +482,8 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
                 frame->registers[a] = string_concat(
                     eka_string_val(sl), eka_string_val(sr));
             } else {
-                double result = value_to_double(lhs) + value_to_double(rhs);
-                if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
-                    result >= -35184372088832.0 && result <= 35184372088831.0) {
-                    frame->registers[a] = eka_int((int64_t)result);
-                } else {
-                    frame->registers[a] = eka_number(result);
-                }
+                /* Neither is string or numeric — treat as 0 */
+                frame->registers[a] = eka_int(0);
             }
             break;
         }
@@ -444,8 +491,12 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
         case OP_SUB: {
             eka_value_t lhs = frame->registers[b];
             eka_value_t rhs = frame->registers[c];
-            double result = value_to_double(lhs) - value_to_double(rhs);
-            if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(lhs, &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(rhs, &r_num, &r_int)) r_num = 0.0;
+            double result = l_num - r_num;
+            if (l_int && r_int && result == floor(result) &&
                 result >= -35184372088832.0 && result <= 35184372088831.0) {
                 frame->registers[a] = eka_int((int64_t)result);
             } else {
@@ -457,8 +508,12 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
         case OP_MUL: {
             eka_value_t lhs = frame->registers[b];
             eka_value_t rhs = frame->registers[c];
-            double result = value_to_double(lhs) * value_to_double(rhs);
-            if (eka_is_int(lhs) && eka_is_int(rhs) && result == floor(result) &&
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(lhs, &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(rhs, &r_num, &r_int)) r_num = 0.0;
+            double result = l_num * r_num;
+            if (l_int && r_int && result == floor(result) &&
                 result >= -35184372088832.0 && result <= 35184372088831.0) {
                 frame->registers[a] = eka_int((int64_t)result);
             } else {
@@ -469,13 +524,17 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
 
         case OP_DIV: {
             eka_value_t lhs = frame->registers[b];
-            double divisor = value_to_double(frame->registers[c]);
-            if (divisor == 0.0) {
+            eka_value_t rhs = frame->registers[c];
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(lhs, &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(rhs, &r_num, &r_int)) r_num = 0.0;
+            if (r_num == 0.0) {
                 set_error(error, "division by zero");
                 return eka_nil();
             }
-            double result = value_to_double(lhs) / divisor;
-            if (eka_is_int(lhs) && eka_is_int(frame->registers[c]) && result == floor(result) &&
+            double result = l_num / r_num;
+            if (l_int && r_int && result == floor(result) &&
                 result >= -35184372088832.0 && result <= 35184372088831.0) {
                 frame->registers[a] = eka_int((int64_t)result);
             } else {
@@ -485,12 +544,17 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
         }
 
         case OP_MOD: {
-            double divisor = value_to_double(frame->registers[c]);
-            if (divisor == 0.0) {
+            eka_value_t lhs = frame->registers[b];
+            eka_value_t rhs = frame->registers[c];
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(lhs, &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(rhs, &r_num, &r_int)) r_num = 0.0;
+            if (r_num == 0.0) {
                 set_error(error, "modulo by zero");
                 return eka_nil();
             }
-            frame->registers[a] = eka_number(fmod(value_to_double(frame->registers[b]), divisor));
+            frame->registers[a] = eka_number(fmod(l_num, r_num));
             break;
         }
 
@@ -531,17 +595,23 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
             break;
         }
 
-        case OP_LT:
-            frame->registers[a] = eka_bool(
-                value_to_double(frame->registers[b]) <
-                value_to_double(frame->registers[c]));
+        case OP_LT: {
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(frame->registers[b], &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(frame->registers[c], &r_num, &r_int)) r_num = 0.0;
+            frame->registers[a] = eka_bool(l_num < r_num);
             break;
+        }
 
-        case OP_LE:
-            frame->registers[a] = eka_bool(
-                value_to_double(frame->registers[b]) <=
-                value_to_double(frame->registers[c]));
+        case OP_LE: {
+            double l_num, r_num;
+            bool l_int, r_int;
+            if (!try_parse_number(frame->registers[b], &l_num, &l_int)) l_num = 0.0;
+            if (!try_parse_number(frame->registers[c], &r_num, &r_int)) r_num = 0.0;
+            frame->registers[a] = eka_bool(l_num <= r_num);
             break;
+        }
 
         /* --- Logic --- */
 

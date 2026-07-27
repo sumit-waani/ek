@@ -102,5 +102,5 @@ Zero runtime dependencies. Works on Linux, macOS, and Windows (via WSL2).
 2. **Pre-packed, not extensible.** 26 builtins cover 90–95% of web needs. If you need more, use a bigger framework.
 3. **Server-driven UI.** The client runtime swaps HTML from the server. No virtual DOM, no signals, no reactive state in the client.
 4. **Synchronous-looking code.** Single event loop + hidden worker pool. User code reads top-to-bottom with no async/await.
-5. **Fault-tolerant templates.** A null reference in `{{ }}` renders as empty string, not a 500 error.
+5. **Fault-tolerant templates.** A null reference in `{{ }}` renders as empty string, not a 500 error. Runtime errors (e.g., division by zero) still return 500.
 6. **Transparent limits.** ~2,000 LOC, ~10 routes. If you hit these, Eka tells you to graduate to a real framework.

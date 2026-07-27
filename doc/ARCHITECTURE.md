@@ -61,7 +61,7 @@ db.exec("CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, text TEXT, do
 let appName = "Todo App"
 ```
 
-Init scope = global scope. Variables declared here are accessible in all request handlers. Init variables are **read-only from request scope** — request handlers cannot mutate them for other concurrent requests.
+Init scope = global scope. Variables declared here are accessible in all request handlers. Init variables are **read-only from request scope** — request handlers cannot mutate them for other concurrent requests. Each request handler receives a **snapshot copy** of init variables; mutations in a handler are discarded after the response. Use `cache`, `session`, or `db` for shared mutable state.
 
 ### Phase 2: Request
 
@@ -150,7 +150,9 @@ The template engine processes `.eka` files in a single pass:
 
 ### Fault Tolerance
 
-Template interpolation is fault-tolerant. If an expression inside `{{ }}` evaluates to an error, it renders as an empty string and a warning is logged. The page continues rendering. This prevents a single null reference from breaking an entire page.
+Template interpolation handles null references gracefully. If an expression inside `{{ }}` evaluates to `null` (nil), it renders as an empty string. Property access on `null` (e.g., `{{ user.name }}` when `user` is null) also returns `null` and renders as empty. The page continues rendering.
+
+**Note:** Runtime errors (division by zero, calling non-functions, stack overflow) still return a 500 error. Fault tolerance applies only to null/nil values, not to all errors.
 
 ### HTML Escaping
 
