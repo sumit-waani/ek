@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 /* ================================================================
  * Compiler state
@@ -133,13 +134,19 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
             val = eka_bool(false);
             break;
         case TOKEN_NUMBER: {
-            /* Parse the number string */
+            /* Parse the number string.
+             * Store as eka_int if it's a whole number that fits in 46-bit range,
+             * otherwise as eka_number (float). */
             char buf[64];
             size_t len = node->token.length < 63 ? node->token.length : 63;
             memcpy(buf, node->token.start, len);
             buf[len] = '\0';
             double d = strtod(buf, NULL);
-            val = eka_number(d);
+            if (d == floor(d) && d >= -35184372088832.0 && d <= 35184372088831.0) {
+                val = eka_int((int64_t)d);
+            } else {
+                val = eka_number(d);
+            }
             break;
         }
         case TOKEN_STRING: {
@@ -450,6 +457,11 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
             uint32_t key_idx = add_string_constant(c, target->as.property.prop,
                                                     target->as.property.prop_len);
             emit(c, eka_instr_encode(OP_SET_PROP, obj, val, (uint8_t)key_idx));
+        } else if (target->type == AST_INDEX) {
+            /* list[i] = val  or  map["key"] = val */
+            uint8_t obj = compile_expr(c, target->as.index.obj);
+            uint8_t idx = compile_expr(c, target->as.index.index);
+            emit(c, eka_instr_encode(OP_SET_INDEX, obj, idx, val));
         }
         return val;
     }

@@ -83,7 +83,9 @@ static void test_init_let(void) {
     /* Verify x is in globals — look up by interned string */
     eka_string_t *key = eka_string_intern("x", 1);
     eka_value_t val = eka_map_get(vm->globals, key);
-    CHECK(eka_is_number(val) && eka_as_number(val) == 42.0, "x should be 42 in globals");
+    CHECK((eka_is_int(val) && eka_as_int(val) == 42) ||
+          (eka_is_number(val) && eka_as_number(val) == 42.0),
+          "x should be 42 in globals");
     PASS();
 }
 
@@ -663,6 +665,43 @@ static void test_let_reassignment_ok(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: index assignment (list[i] = val)
+ * ================================================================ */
+
+static void test_index_assignment(void) {
+    TEST("index assignment: list[0] = \"changed\"");
+    const char *src =
+        "let items = [\"a\", \"b\", \"c\"]\n"
+        "items[0] = \"changed\"\n"
+        "@get /\n"
+        "  {{ items[0] }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "index_assign");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "changed") != NULL, "items[0] should be 'changed'");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -686,6 +725,7 @@ int main(void) {
     test_null_safe_on_value();
     test_const_reassignment_rejected();
     test_let_reassignment_ok();
+    test_index_assignment();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
