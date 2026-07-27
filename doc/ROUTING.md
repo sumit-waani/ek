@@ -161,9 +161,9 @@ request.path                    -- "/user/42"
 request.method                  -- "GET", "POST", "PUT", "DELETE", "PATCH"
 request.query("q")              -- string or null
 request.query("q", "default")   -- string (with default)
-request.form()                  -- map (for POST form data)
-request.json()                  -- map or list (for POST JSON body)
-request.file("avatar")          -- {name, type, size, path, bytes} or null
+request.form()                  -- map (POST form data) ⚠ stub: returns empty map
+request.json()                  -- map or list (POST JSON body)
+request.file("avatar")          -- null ⚠ stub: multipart upload not yet implemented
 request.header("X-Token")       -- string or null
 request.param("id")             -- string (route param) or null
 ```
@@ -190,6 +190,8 @@ response.cookie("session", token, {      -- Set cookie with options
 ```
 
 ## File Uploads
+
+> **⚠ Not yet implemented.** `request.file()` currently returns `null`. Multipart parsing is planned for a future release. The API below documents the intended design.
 
 ```eka
 let file = request.file("avatar")

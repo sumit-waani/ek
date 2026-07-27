@@ -1,6 +1,6 @@
 # Eka — Builtins Reference
 
-Eka ships with **26 builtins.** These are the only APIs available. There is no package manager, no imports, no external dependencies. If you need something not listed here, Eka may not be the right tool.
+Eka ships with **27 builtins.** These are the only APIs available. There is no package manager, no imports, no external dependencies. If you need something not listed here, Eka may not be the right tool.
 
 ---
 
@@ -25,9 +25,9 @@ request.path                    -- "/user/42"
 request.method                  -- "GET", "POST", etc.
 request.query("q")              -- URL query param (string or null)
 request.query("q", "default")   -- With default value
-request.form()                  -- POST form data (map)
+request.form()                  -- POST form data (map) [stub: returns empty map]
 request.json()                  -- POST JSON body (map or list)
-request.file("avatar")          -- {name, type, size, path, bytes} or null
+request.file("avatar")          -- {name, type, size, path, bytes} or null [stub: not yet implemented]
 request.header("X-Token")       -- Header value (string or null)
 request.param("id")             -- Route parameter from [id]
 ```
@@ -502,11 +502,35 @@ Mathematical operations.
 | `math.abs(n)` | number | Absolute value |
 | `math.min(a, b)` | number | Minimum of two numbers |
 | `math.max(a, b)` | number | Maximum of two numbers |
+| `math.pow(base, exp)` | number | Raise base to exponent |
+| `math.sqrt(n)` | number | Square root |
+| `math.log(n)` | number | Natural logarithm |
 | `math.random()` | number | Random float between 0 and 1 |
 | `math.randomInt(min, max)` | number | Random integer inclusive |
 
 ```eka
 math.ceil(3.2)          -- 4
 math.round(3.5)         -- 4
+math.pow(2, 10)         -- 1024
+math.sqrt(144)          -- 12
+math.log(2.718281828)   -- ~1
 math.randomInt(1, 100)  -- 42
+```
+
+---
+
+## 27. `number`
+
+Number parsing and conversion.
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `number.parse(str)` | number or null | Parse string to number. Returns `int` for whole numbers, `float` for decimals, `null` for invalid |
+
+```eka
+number.parse("42")         -- 42 (int)
+number.parse("3.14")       -- 3.14 (float)
+number.parse("-7")         -- -7 (int)
+number.parse("hello")      -- null
+number.parse("")           -- null
 ```

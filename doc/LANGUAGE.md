@@ -33,7 +33,7 @@ Variables must be declared before use. Undeclared variables are a compile-time e
 | Type | Description | Example |
 |------|-------------|---------|
 | `string` | UTF-8 text | `"hello"` |
-| `number` | 64-bit float (IEEE 754) | `42`, `3.14`, `0xFF` |
+| `number` | 46-bit int or 64-bit float | `42`, `3.14`, `0xFF` |
 | `bool` | Boolean | `true`, `false` |
 | `list` | Ordered collection | `[1, 2, 3]` |
 | `map` | Key-value collection | `{name: "Alice", age: 30}` |
@@ -92,12 +92,26 @@ let hex = 0xFF
 let neg = -5
 ```
 
-All numbers are 64-bit floats (IEEE 754). There is no integer type.
+Eka has two numeric subtypes, both NaN-boxed in 64-bit values:
+
+| Subtype | Range | Example |
+|---------|-------|---------|
+| `int` | 46-bit signed (~±35 trillion) | `42`, `-7`, `0xFF` |
+| `float` | IEEE 754 double | `3.14`, `1e10` |
+
+Whole numbers that fit in 46 bits are stored as `int`. Decimal numbers are stored as `float`. Arithmetic between two `int` values preserves `int` type when the result is a whole number:
+
+```eka
+let a = 10 + 20       -- int (32)
+let b = 10 / 3        -- float (3.333...)
+let c = 7 * 2         -- int (14)
+```
 
 To parse a string to a number:
 
 ```eka
-let id = number.parse("42")         -- 42
+let id = number.parse("42")         -- 42 (int)
+let pi = number.parse("3.14")       -- 3.14 (float)
 let invalid = number.parse("hello") -- null
 ```
 

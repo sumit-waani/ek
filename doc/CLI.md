@@ -12,10 +12,11 @@ Start the development server.
 eka run                      # Read app.eka, serve on port 8080
 eka run --port 3000          # Custom port
 eka run --static ./assets    # Custom static files directory (default: auto-detect public/)
+eka run --file myapp.eka     # Run a specific .eka file (default: app.eka)
 ```
 
 Behavior:
-- Reads `app.eka` in the current directory
+- Reads `app.eka` in the current directory (or `--file` path)
 - Compiles and executes init code
 - Starts HTTP server on the configured port
 - Watches `app.eka` for changes (auto-reload, except in production)
