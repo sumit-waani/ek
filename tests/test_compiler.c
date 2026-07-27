@@ -610,6 +610,59 @@ static void test_null_safe_on_value(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: const immutability
+ * ================================================================ */
+
+static void test_const_reassignment_rejected(void) {
+    TEST("const reassignment is rejected");
+    const char *src =
+        "const X = 10\n"
+        "X = 20\n";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(prog->had_error, "should fail (const reassignment)");
+    PASS();
+}
+
+static void test_let_reassignment_ok(void) {
+    TEST("let reassignment is allowed");
+    const char *src =
+        "let x = 10\n"
+        "x = 20\n"
+        "@get /\n"
+        "  {{ x }}\n"
+        "@end";
+
+    eka_parser_t parser;
+    eka_parser_init(&parser, src);
+    ast_node_t *ast = eka_parse(&parser);
+    CHECK(!parser.had_error, "should parse");
+
+    eka_compiled_program_t *prog = eka_compile(ast);
+    CHECK(!prog->had_error, "should compile (let reassignment is OK)");
+
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    if (prog->init_func && prog->init_func->code_length > 0) {
+        eka_closure_t *cl = eka_closure_new(prog->init_func);
+        const char *err = NULL;
+        eka_vm_execute_init(&vm, cl, &err);
+        CHECK(!err, "init should not error");
+    }
+
+    eka_value_t result = execute_method(&vm, prog, 0, "let_reassign");
+    CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
+    const char *out = eka_as_string(result)->data;
+    CHECK(strstr(out, "20") != NULL, "x should be 20 after reassignment");
+    PASS();
+}
+
 static eka_vm_t test_vm;
 
 int main(void) {
@@ -631,6 +684,8 @@ int main(void) {
     test_string_interp();
     test_null_safe();
     test_null_safe_on_value();
+    test_const_reassignment_rejected();
+    test_let_reassignment_ok();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;

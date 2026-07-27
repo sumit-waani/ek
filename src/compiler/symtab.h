@@ -25,6 +25,7 @@ typedef struct sym_t {
     sym_kind_t    kind;
     uint32_t      index;     /* register slot or upvalue index */
     bool          is_captured; /* true if enclosed function captures this */
+    bool          is_const;    /* true if declared with const */
 } sym_t;
 
 typedef struct scope_t {

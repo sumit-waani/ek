@@ -423,6 +423,15 @@ static uint8_t compile_expr(compiler_t *c, ast_node_t *node) {
             sym_kind_t kind;
             const char *name = target->as.identifier.name;
             size_t len = target->as.identifier.name_len;
+
+            /* Check const before resolving */
+            sym_t *sym = symtab_resolve(c->current_scope, name, len);
+            if (sym && sym->is_const) {
+                c->had_error = true;
+                c->error_msg = "cannot reassign const variable";
+                return 0;
+            }
+
             uint8_t idx = resolve_var(c, name, len, &kind);
 
             if (kind == SYM_LOCAL) {
@@ -502,6 +511,11 @@ static void compile_stmt(compiler_t *c, ast_node_t *node) {
             c->had_error = true;
             c->error_msg = "duplicate variable";
             return;
+        }
+
+        /* Mark const for reassignment checking */
+        if (node->type == AST_CONST_STMT) {
+            sym->is_const = true;
         }
 
         if (node->as.var_decl.value) {
