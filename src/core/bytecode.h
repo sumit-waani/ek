@@ -70,6 +70,9 @@ typedef enum {
     OP_GET_GLOBAL,    /* R(A) = globals[constant[B]] */
     OP_SET_GLOBAL,    /* globals[constant[A]] = R(B) */
 
+    /* --- Template --- */
+    OP_HTML_ESCAPE,   /* R(A) = html_escape(R(A)); RawString passes through */
+
     OP_COUNT
 } eka_opcode_t;
 

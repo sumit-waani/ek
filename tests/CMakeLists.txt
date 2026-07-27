@@ -4,13 +4,13 @@ target_compile_options(test_value PRIVATE -g -O0)
 target_link_libraries(test_value PRIVATE m)
 add_test(NAME value COMMAND test_value)
 
-add_executable(test_obj test_obj.c "${CMAKE_SOURCE_DIR}/src/core/obj.c" "${CMAKE_SOURCE_DIR}/src/core/vm.c")
+add_executable(test_obj test_obj.c "${CMAKE_SOURCE_DIR}/src/core/obj.c" "${CMAKE_SOURCE_DIR}/src/core/vm.c" "${CMAKE_SOURCE_DIR}/src/core/value.c")
 target_include_directories(test_obj PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_obj PRIVATE -g -O0)
 target_link_libraries(test_obj PRIVATE m)
 add_test(NAME obj COMMAND test_obj)
 
-add_executable(test_vm test_vm.c "${CMAKE_SOURCE_DIR}/src/core/obj.c" "${CMAKE_SOURCE_DIR}/src/core/vm.c")
+add_executable(test_vm test_vm.c "${CMAKE_SOURCE_DIR}/src/core/obj.c" "${CMAKE_SOURCE_DIR}/src/core/vm.c" "${CMAKE_SOURCE_DIR}/src/core/value.c")
 target_include_directories(test_vm PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_vm PRIVATE -g -O0)
 target_link_libraries(test_vm PRIVATE m)
@@ -28,7 +28,8 @@ add_executable(test_parser test_parser.c
     "${CMAKE_SOURCE_DIR}/src/parser/ast.c"
     "${CMAKE_SOURCE_DIR}/src/parser/parser.c"
     "${CMAKE_SOURCE_DIR}/src/core/obj.c"
-    "${CMAKE_SOURCE_DIR}/src/core/vm.c")
+    "${CMAKE_SOURCE_DIR}/src/core/vm.c"
+    "${CMAKE_SOURCE_DIR}/src/core/value.c")
 target_include_directories(test_parser PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_parser PRIVATE -g -O0)
 target_link_libraries(test_parser PRIVATE m)
@@ -42,7 +43,8 @@ add_executable(test_compiler test_compiler.c
     "${CMAKE_SOURCE_DIR}/src/compiler/symtab.c"
     "${CMAKE_SOURCE_DIR}/src/compiler/compiler.c"
     "${CMAKE_SOURCE_DIR}/src/core/obj.c"
-    "${CMAKE_SOURCE_DIR}/src/core/vm.c")
+    "${CMAKE_SOURCE_DIR}/src/core/vm.c"
+    "${CMAKE_SOURCE_DIR}/src/core/value.c")
 target_include_directories(test_compiler PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(test_compiler PRIVATE -g -O0)
 target_link_libraries(test_compiler PRIVATE m)
@@ -59,6 +61,7 @@ add_test(NAME fmt COMMAND test_fmt)
 add_executable(test_builtins test_builtins.c
     "${CMAKE_SOURCE_DIR}/src/core/obj.c"
     "${CMAKE_SOURCE_DIR}/src/core/vm.c"
+    "${CMAKE_SOURCE_DIR}/src/core/value.c"
     "${CMAKE_SOURCE_DIR}/src/builtins/builtins.c"
     "${CMAKE_SOURCE_DIR}/src/runtime/http.c")
 target_include_directories(test_builtins PRIVATE "${CMAKE_SOURCE_DIR}/src")

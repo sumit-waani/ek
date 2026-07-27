@@ -249,7 +249,7 @@ db.exec("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, text TEXT,
       @end
       @for msg in msgs
         <div class="msg">
-          <p>{{ html.escape(msg.text) }}</p>
+          <p>{{ msg.text }}</p>
           <small>{{ msg.created_at }}</small>
         </div>
       @end
@@ -287,7 +287,7 @@ db.exec("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, text TEXT,
     end
     let now = datetime.now().format("HH:mm:ss")
     db.exec("INSERT INTO messages (text, created_at) VALUES (?, ?)", [text, now])
-    sse.broadcast("message", json.stringify({text: html.escape(text), time: now}))
+    sse.broadcast("message", json.stringify({text: text, time: now}))
   @end
   ""
 @end

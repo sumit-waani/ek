@@ -441,8 +441,8 @@ static void test_markdown_parse(void) {
     };
     eka_value_t result = call_method(md_obj, "parse", &vm, args, 1);
 
-    CHECK(eka_obj_is_type(result, OBJ_STRING), "markdown.parse returns string");
-    CHECK(strstr(eka_as_string(result)->data, "<h1>Hello</h1>") != NULL,
+    CHECK(eka_obj_is_type(result, OBJ_RAWSTRING), "markdown.parse returns RawString");
+    CHECK(strstr(eka_as_rawstring(result)->data, "<h1>Hello</h1>") != NULL,
           "should contain <h1>Hello</h1>");
     PASS();
 }

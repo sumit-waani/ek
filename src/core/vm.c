@@ -812,6 +812,12 @@ static eka_value_t eka_vm_execute_inner(eka_vm_t *vm, eka_closure_t *closure,
             break;
         }
 
+        case OP_HTML_ESCAPE: {
+            /* R(A) = html_escape(R(A)); RawString passes through unchanged */
+            frame->registers[a] = eka_html_escape_value(frame->registers[a]);
+            break;
+        }
+
         default:
             set_error(error, "unknown opcode");
             return eka_nil();

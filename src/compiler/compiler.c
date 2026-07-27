@@ -833,6 +833,8 @@ static uint8_t compile_template(compiler_t *c, ast_node_t *node) {
 
         case AST_TEMPLATE_EXPR: {
             uint8_t expr_reg = compile_expr(c, n->as.expr_stmt.expr);
+            /* HTML-escape the value (RawString passes through unchanged) */
+            emit(c, eka_instr_encode(OP_HTML_ESCAPE, expr_reg, 0, 0));
             /* Convert to string by concatenating with empty string */
             uint8_t empty_reg = alloc_reg(c);
             emit(c, eka_instr_encode(OP_LOAD_CONST, empty_reg, (uint8_t)empty_idx, 0));

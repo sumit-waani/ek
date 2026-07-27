@@ -800,9 +800,12 @@ static eka_value_t markdown_parse(eka_vm_t *vm, void *ctx, int argc, eka_value_t
     const char *input = arg_string(argc, args, 0, "");
     char *html = cmark_markdown_to_html(input, strlen(input),
                                          CMARK_OPT_DEFAULT);
-    if (!html) return eka_string_val(eka_string_new("", 0));
-    eka_string_t *result = eka_string_take(html, strlen(html));
-    return eka_string_val(result);
+    if (!html) return eka_rawstring_val(eka_rawstring_new("", 0));
+    /* Return as RawString — markdown output is HTML, should not be escaped
+     * when used in {{ }} template interpolation. */
+    eka_rawstring_t *raw = eka_rawstring_new(html, strlen(html));
+    free(html);
+    return eka_rawstring_val(raw);
 }
 
 /* ================================================================

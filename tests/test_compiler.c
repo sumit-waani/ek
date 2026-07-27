@@ -18,6 +18,10 @@ static int tests_failed = 0;
 #define FAIL(msg)   do { printf("FAIL: %s\n", msg); tests_failed++; } while(0)
 #define CHECK(cond, msg) do { if (!(cond)) { FAIL(msg); return; } } while(0)
 
+/* Restore eka_gc_current_vm to the global test_vm after local VM tests */
+static eka_vm_t test_vm;
+#define RESTORE_GC() eka_gc_current_vm = &test_vm
+
 /* Helper: parse → compile, run init, return VM */
 static eka_vm_t *compile_and_init(const char *src, const char *name) {
     eka_parser_t parser;
@@ -109,6 +113,8 @@ static void test_method_simple(void) {
     /* Template includes leading whitespace and trailing newline */
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "<h1>Hi</h1>") != NULL, "should contain '<h1>Hi</h1>'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -147,6 +153,8 @@ static void test_method_with_expr(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "Eka") != NULL, "should contain 'Eka' from global");
+    eka_vm_free(&vm2);
+    RESTORE_GC();
     PASS();
 }
 
@@ -175,6 +183,8 @@ static void test_method_with_if(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "visible") != NULL, "should contain 'visible'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -217,6 +227,8 @@ static void test_global_assignment(void) {
     const char *out = eka_as_string(result)->data;
     /* x was reassigned to 20; template converts to "20" */
     CHECK(strstr(out, "20") != NULL, "should contain '20' from reassigned global");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -258,6 +270,8 @@ static void test_for_in_loop(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "60") != NULL, "total should be 60 (10+20+30)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -299,6 +313,8 @@ static void test_template_for(void) {
     CHECK(strstr(out, "<span>a</span>") != NULL, "should contain <span>a</span>");
     CHECK(strstr(out, "<span>b</span>") != NULL, "should contain <span>b</span>");
     CHECK(strstr(out, "<span>c</span>") != NULL, "should contain <span>c</span>");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -336,6 +352,8 @@ static void test_null_coalesce_fallback(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "default") != NULL, "should contain 'default' (null ?? fallback)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -370,6 +388,8 @@ static void test_null_coalesce_preserve(void) {
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "hello") != NULL, "should contain 'hello' (non-null ?? fallback)");
     CHECK(strstr(out, "default") == NULL, "should NOT contain 'default'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -408,6 +428,8 @@ static void test_approx_eq(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "true") != NULL, "should contain 'true' (equal strings ~= equal)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -449,6 +471,8 @@ static void test_while_loop(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "15") != NULL, "total should be 15 (1+2+3+4+5)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -490,6 +514,8 @@ static void test_try_catch(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "42") != NULL, "x should be 42 (try body executed)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -534,6 +560,8 @@ static void test_string_interp(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *html = eka_as_string(result)->data;
     CHECK(strstr(html, "Hello, World!") != NULL, "should contain 'Hello, World!'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -576,6 +604,8 @@ static void test_null_safe(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "was-null") != NULL, "should contain 'was-null' (null ?? fallback)");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -609,6 +639,8 @@ static void test_null_safe_on_value(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "Alice") != NULL, "should contain 'Alice'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -662,6 +694,8 @@ static void test_let_reassignment_ok(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "20") != NULL, "x should be 20 after reassignment");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
 
@@ -699,10 +733,10 @@ static void test_index_assignment(void) {
     CHECK(eka_obj_is_type(result, OBJ_STRING), "result should be string");
     const char *out = eka_as_string(result)->data;
     CHECK(strstr(out, "changed") != NULL, "items[0] should be 'changed'");
+    eka_vm_free(&vm);
+    RESTORE_GC();
     PASS();
 }
-
-static eka_vm_t test_vm;
 
 int main(void) {
     printf("compiler tests:\n");

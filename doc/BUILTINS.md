@@ -131,6 +131,12 @@ let html = markdown.parse("# Hello\n\nWorld")
 -- → "<h1>Hello</h1>\n<p>World</p>\n"
 ```
 
+Returns `RawString` — output renders as HTML in `{{ }}` without double-escaping:
+
+```eka
+<div>{{ markdown.parse(post.body) }}</div>
+```
+
 ---
 
 ## 8. `html`
@@ -145,7 +151,9 @@ let raw = html.raw("<b>Bold</b>")
 -- → RawString — bypasses auto-escaping in {{ }}
 ```
 
-`html.raw()` is the ONLY way to bypass HTML escaping. Use only with trusted content.
+`{{ }}` auto-escapes by default — you rarely need `html.escape()` in templates. Use it only when building HTML strings in code (e.g., for SSE/data payloads).
+
+`html.raw()` is the ONLY way to bypass HTML escaping in `{{ }}`. Use only with trusted content. Functions that produce HTML (like `markdown.parse()`) return `RawString` automatically.
 
 ---
 

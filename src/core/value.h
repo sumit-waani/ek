@@ -140,4 +140,8 @@ static inline bool eka_obj_is_type(eka_value_t v, eka_objtype_t type) {
     return eka_is_obj(v) && eka_as_obj(v)->type == type;
 }
 
+/* HTML-escape a value for safe template interpolation.
+ * RawString → returned as-is. String → escaped. Other → stringify then escape. */
+eka_value_t eka_html_escape_value(eka_value_t v);
+
 #endif /* VALUE_H */

@@ -162,7 +162,7 @@ if value is null → output empty string
 everything else → html.escape(stringify(value))
 ```
 
-`RawString` is created exclusively by `html.raw()`. There is no other way to bypass escaping. `RawString` is consumed at render time and cannot be converted back to a regular string.
+`RawString` is created by `html.raw()` and by functions that produce HTML (like `markdown.parse()`). There is no other way to bypass escaping. `RawString` is consumed at render time and cannot be converted back to a regular string.
 
 ## Client Runtime Delivery
 

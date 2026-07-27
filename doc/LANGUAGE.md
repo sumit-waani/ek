@@ -285,6 +285,75 @@ while condition
 end
 ```
 
+## Block Closing Rules
+
+Eka has two syntax modes — **code mode** and **template mode** — and each uses a different closing keyword.
+
+### Code blocks → plain `end`
+
+Functions, imperative control flow, and error handling use plain `end`:
+
+```eka
+func greet(name)
+  "Hello, ${name}!"
+end
+
+if condition
+  ...
+else
+  ...
+end
+
+for item in list
+  ...
+end
+
+while running
+  ...
+end
+
+try
+  risky()
+catch err
+  handle(err)
+end
+```
+
+### Template directives → `@end`
+
+Template-mode directives (`@if`, `@for`, `@do`) use `@end`:
+
+```eka
+@get /
+  @if user.isAdmin
+    <div>Admin</div>
+  @else
+    <div>User</div>
+  @end
+
+  @for item in items
+    <p>{{ item }}</p>
+  @end
+
+  @do
+    let count = items.length
+  @end
+@end
+```
+
+| Context | Opens with | Closes with |
+|---------|-----------|-------------|
+| `func` | `func name()` | `end` |
+| `if` / `else` | `if cond` | `end` |
+| `for` / `while` | `for x in list` | `end` |
+| `try` / `catch` | `try` | `end` |
+| `@if` / `@else` | `@if cond` | `@end` |
+| `@for` / `@else` | `@for x in list` | `@end` |
+| `@do` | `@do` | `@end` |
+| `@get`, `@post`, etc. | `@get /path` | `@end` |
+
+**Rule of thumb:** If it starts with `@`, it closes with `@end`. Otherwise, plain `end`.
+
 ## Error Handling
 
 ```eka
@@ -327,6 +396,13 @@ end
 ```
 
 `html.raw()` returns a `RawString` wrapper. The template engine detects it and skips escaping. Only use with trusted content.
+
+Functions that produce HTML (like `markdown.parse()`) return `RawString` automatically — their output is not double-escaped:
+
+```eka
+<div>{{ markdown.parse(post.body) }}</div>
+-- Markdown output renders as HTML, not escaped
+```
 
 ### Template Control Blocks
 
