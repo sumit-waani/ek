@@ -1,0 +1,25 @@
+{
+  "project_type": "C11 programming language implementation (Eka) with VM, compiler, HTTP server, and 27 builtins",
+  "language": "C11",
+  "build_system": "CMake with pkg-config dependencies. Build dir: /projects/sandbox/ek/build",
+  "test_framework": "Custom C test harness in tests/ (no framework, just assert-style macros: TEST/PASS/FAIL/CHECK)",
+  "build_command": "cd /projects/sandbox/ek/build && PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:$PKG_CONFIG_PATH make -j$(nproc)",
+  "test_command": "cd /projects/sandbox/ek/build && ctest --output-on-failure",
+  "verification_instructions": "1. Build: cd build && make -j$(nproc). 2. Test: ctest --output-on-failure. 3. All 8 tests must pass.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "Dependencies already installed. Build directory already configured at /projects/sandbox/ek/build. Just run make in that directory. PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig must be set for cmake to find libcmark.",
+  "environment_constraints": "OPEN_INTERNET. All deps installed (libuv-devel from dnf, cmark from source at /usr/local). Build already works.",
+  "contribution_requirements": "No CONTRIBUTING.md. Code follows existing patterns: builtins are C functions registered in eka_builtins_register(). Tests use custom TEST/PASS/FAIL/CHECK macros.",
+  "key_patterns": "Builtins: static eka_value_t name(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args). Registered as maps of native functions via map_set_cstr + make_native. Tests call builtins directly via call_global/call_method helpers. Each test function is called from main().",
+  "relevant_files": [
+    "src/builtins/builtins.c",
+    "tests/test_builtins.c",
+    "doc/README.md",
+    "doc/BUILTINS.md",
+    "doc/LANGUAGE.md",
+    "doc/ROUTING.md",
+    "CMakeLists.txt",
+    "tests/CMakeLists.txt"
+  ],
+  "directory_structure": "src/ (main code: builtins/, cli/, client/, compiler/, core/, fmt/, lexer/, parser/, runtime/), tests/ (8 test files), doc/ (10 docs), vendor/ (yyjson)"
+}

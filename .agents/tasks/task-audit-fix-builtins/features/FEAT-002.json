@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "docs",
   "description": "Fix documentation inconsistency: doc/README.md says '26 builtins' and its quick-reference table only lists 26 items (missing 'number'). Update to match the actual 27 builtins documented in doc/BUILTINS.md.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "In doc/README.md: change '26 builtins cover 90-95%' to '27 builtins cover 90-95%' and change 'All 26 builtins' to 'All 27 builtins' in the BUILTINS doc link description.",
     "In doc/README.md: add row #27 'number' to the quick-reference table at the bottom, after math (#26): '| 27 | `number` | Number parsing (parse string to int/float) |'"
@@ -16,5 +16,5 @@
     "grep -c 'number' doc/README.md should return at least 1 (the table row)"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Documentation-only change. Updated '26 builtins' to '27 builtins' in two places and added row #27 (number) to the quick-reference table. No build/test needed."
 }
