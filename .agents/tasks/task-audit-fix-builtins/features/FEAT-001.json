@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "fix",
   "description": "Fix implementation divergences from documentation: regex.replace argument order, datetime.parse format tokens, session.csrf() idempotency, math functions returning int where appropriate, and request.form() parsing",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Fix regex.replace in src/builtins/builtins.c: docs say regex.replace(pattern, subject, replacement) but code reads args as (pattern, replacement, subject). Change to match docs: args[0]=pattern, args[1]=subject, args[2]=replacement. The fallback return should also be updated from args[2] to args[1].",
     "Fix datetime.parse in src/builtins/builtins.c: docs say format uses YYYY-MM-DD tokens (like datetime.format), but implementation passes format directly to strptime (C format). Add token conversion before calling strptime: replace YYYY with %Y, YY with %y, MM with %m, DD with %d, HH with %H, mm with %M, ss with %S. This makes datetime.parse consistent with datetime.format.",
@@ -25,5 +25,5 @@
     "cd /projects/sandbox/ek/build && ctest --output-on-failure"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All 5 fixes implemented successfully. Updated 3 existing test assertions that were affected by the math int-return and datetime format changes. The existing test_math test previously checked eka_is_number for floor/ceil/min results - updated to check eka_is_int. The existing test_datetime_parse previously used C format tokens (%Y-%m-%d) - updated to Eka tokens (YYYY-MM-DD). All 40 tests pass including 5 new tests."
 }
