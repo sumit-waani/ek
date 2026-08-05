@@ -1104,9 +1104,77 @@ static eka_value_t response_cookie(eka_vm_t *vm, void *ctx, int argc, eka_value_
  * ================================================================ */
 
 static eka_value_t request_form(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
-    (void)vm; (void)ctx; (void)argc; (void)args;
-    /* TODO: parse application/x-www-form-urlencoded body */
-    return eka_map_val(eka_map_new(4));
+    (void)ctx; (void)argc; (void)args;
+    if (!vm->current_req || !vm->current_req->body || vm->current_req->body_len == 0)
+        return eka_map_val(eka_map_new(4));
+
+    /* Parse application/x-www-form-urlencoded body */
+    eka_map_t *form = eka_map_new(8);
+    const char *body = vm->current_req->body;
+    size_t body_len = vm->current_req->body_len;
+    const char *p = body;
+    const char *end = body + body_len;
+
+    while (p < end) {
+        /* Find the end of this key=value pair */
+        const char *amp = memchr(p, '&', (size_t)(end - p));
+        if (!amp) amp = end;
+
+        /* Find the = separator */
+        const char *eq = memchr(p, '=', (size_t)(amp - p));
+
+        const char *key_start = p;
+        size_t key_raw_len = eq ? (size_t)(eq - p) : (size_t)(amp - p);
+        const char *val_start = eq ? eq + 1 : NULL;
+        size_t val_raw_len = eq ? (size_t)(amp - eq - 1) : 0;
+
+        /* URL-decode key */
+        char *key_dec = malloc(key_raw_len + 1);
+        if (key_dec) {
+            size_t ki = 0;
+            for (size_t si = 0; si < key_raw_len; si++) {
+                char c = key_start[si];
+                if (c == '%' && si + 2 < key_raw_len) {
+                    char hex[3] = {key_start[si + 1], key_start[si + 2], '\0'};
+                    key_dec[ki++] = (char)strtol(hex, NULL, 16);
+                    si += 2;
+                } else if (c == '+') {
+                    key_dec[ki++] = ' ';
+                } else {
+                    key_dec[ki++] = c;
+                }
+            }
+            key_dec[ki] = '\0';
+
+            /* URL-decode value */
+            char *val_dec = malloc(val_raw_len + 1);
+            if (val_dec) {
+                size_t vi = 0;
+                for (size_t si = 0; si < val_raw_len; si++) {
+                    char c = val_start[si];
+                    if (c == '%' && si + 2 < val_raw_len) {
+                        char hex[3] = {val_start[si + 1], val_start[si + 2], '\0'};
+                        val_dec[vi++] = (char)strtol(hex, NULL, 16);
+                        si += 2;
+                    } else if (c == '+') {
+                        val_dec[vi++] = ' ';
+                    } else {
+                        val_dec[vi++] = c;
+                    }
+                }
+                val_dec[vi] = '\0';
+
+                eka_string_t *k = eka_string_new(key_dec, ki);
+                eka_map_set(form, k, eka_string_val(eka_string_new(val_dec, vi)));
+                free(val_dec);
+            }
+            free(key_dec);
+        }
+
+        p = amp < end ? amp + 1 : end;
+    }
+
+    return eka_map_val(form);
 }
 
 static eka_value_t request_json_fn(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
@@ -2115,6 +2183,16 @@ static eka_value_t session_clear(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
 
 static eka_value_t session_csrf(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)ctx; (void)argc; (void)args;
+
+    /* Check if _csrf token already exists in session */
+    if (vm->session_data) {
+        eka_string_t *key = eka_string_intern("_csrf", 5);
+        eka_value_t existing = eka_map_get(vm->session_data, key);
+        if (eka_obj_is_type(existing, OBJ_STRING)) {
+            return existing;
+        }
+    }
+
     /* Generate a CSRF token and store it in the session */
     unsigned char buf[16];
     RAND_bytes(buf, sizeof(buf));
@@ -2647,21 +2725,21 @@ static eka_value_t regex_replace(eka_vm_t *vm, void *ctx, int argc, eka_value_t 
     (void)vm; (void)ctx;
     CHECK_ARGC(3);
     const char *pattern = arg_string(argc, args, 0, NULL);
-    const char *replacement = arg_string(argc, args, 1, "");
-    const char *subject = arg_string(argc, args, 2, "");
-    if (!pattern) return args[2];
+    const char *subject = arg_string(argc, args, 1, "");
+    const char *replacement = arg_string(argc, args, 2, "");
+    if (!pattern) return args[1];
 
     int errcode;
     PCRE2_SIZE erroffset;
     pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED,
                                     0, &errcode, &erroffset, NULL);
-    if (!re) return args[2];
+    if (!re) return args[1];
 
     size_t subj_len = strlen(subject);
     size_t repl_len = strlen(replacement);
     size_t max_out = subj_len * 2 + repl_len + 1;
     char *buf = malloc(max_out);
-    if (!buf) { pcre2_code_free(re); return args[2]; }
+    if (!buf) { pcre2_code_free(re); return args[1]; }
 
     size_t out = 0;
     size_t offset = 0;
@@ -2731,21 +2809,30 @@ static eka_value_t math_floor(eka_vm_t *vm, void *ctx, int argc, eka_value_t *ar
     (void)vm; (void)ctx; CHECK_ARGC(1);
     double d = eka_is_number(args[0]) ? eka_as_number(args[0]) :
                eka_is_int(args[0]) ? (double)eka_as_int(args[0]) : 0.0;
-    return eka_number(floor(d));
+    double r = floor(d);
+    if (r == floor(r) && r >= -35184372088832.0 && r <= 35184372088831.0)
+        return eka_int((int64_t)r);
+    return eka_number(r);
 }
 
 static eka_value_t math_ceil(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx; CHECK_ARGC(1);
     double d = eka_is_number(args[0]) ? eka_as_number(args[0]) :
                eka_is_int(args[0]) ? (double)eka_as_int(args[0]) : 0.0;
-    return eka_number(ceil(d));
+    double r = ceil(d);
+    if (r == floor(r) && r >= -35184372088832.0 && r <= 35184372088831.0)
+        return eka_int((int64_t)r);
+    return eka_number(r);
 }
 
 static eka_value_t math_round(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
     (void)vm; (void)ctx; CHECK_ARGC(1);
     double d = eka_is_number(args[0]) ? eka_as_number(args[0]) :
                eka_is_int(args[0]) ? (double)eka_as_int(args[0]) : 0.0;
-    return eka_number(round(d));
+    double r = round(d);
+    if (r == floor(r) && r >= -35184372088832.0 && r <= 35184372088831.0)
+        return eka_int((int64_t)r);
+    return eka_number(r);
 }
 
 static eka_value_t math_abs(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
@@ -2764,7 +2851,10 @@ static eka_value_t math_min(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args
                eka_is_int(args[0]) ? (double)eka_as_int(args[0]) : 0.0;
     double b = eka_is_number(args[1]) ? eka_as_number(args[1]) :
                eka_is_int(args[1]) ? (double)eka_as_int(args[1]) : 0.0;
-    return eka_number(a < b ? a : b);
+    double r = a < b ? a : b;
+    if (r == floor(r) && r >= -35184372088832.0 && r <= 35184372088831.0)
+        return eka_int((int64_t)r);
+    return eka_number(r);
 }
 
 static eka_value_t math_max(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
@@ -2773,7 +2863,10 @@ static eka_value_t math_max(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args
                eka_is_int(args[0]) ? (double)eka_as_int(args[0]) : 0.0;
     double b = eka_is_number(args[1]) ? eka_as_number(args[1]) :
                eka_is_int(args[1]) ? (double)eka_as_int(args[1]) : 0.0;
-    return eka_number(a > b ? a : b);
+    double r = a > b ? a : b;
+    if (r == floor(r) && r >= -35184372088832.0 && r <= 35184372088831.0)
+        return eka_int((int64_t)r);
+    return eka_number(r);
 }
 
 static eka_value_t math_pow(eka_vm_t *vm, void *ctx, int argc, eka_value_t *args) {
@@ -2846,11 +2939,42 @@ static eka_value_t datetime_parse(eka_vm_t *vm, void *ctx, int argc, eka_value_t
     const char *fmt = arg_string(argc, args, 1, NULL);
     if (!str || !fmt) return eka_nil();
 
+    /* Convert Eka format tokens to C strptime format specifiers */
+    char cfmt[256];
+    size_t ci = 0;
+    for (const char *p = fmt; *p && ci < sizeof(cfmt) - 3; p++) {
+        if (*p == 'Y' && p[1] == 'Y' && p[2] == 'Y' && p[3] == 'Y') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'Y';
+            p += 3;
+        } else if (*p == 'Y' && p[1] == 'Y') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'y';
+            p += 1;
+        } else if (*p == 'M' && p[1] == 'M') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'm';
+            p += 1;
+        } else if (*p == 'D' && p[1] == 'D') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'd';
+            p += 1;
+        } else if (*p == 'H' && p[1] == 'H') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'H';
+            p += 1;
+        } else if (*p == 'm' && p[1] == 'm') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'M';
+            p += 1;
+        } else if (*p == 's' && p[1] == 's') {
+            cfmt[ci++] = '%'; cfmt[ci++] = 'S';
+            p += 1;
+        } else {
+            cfmt[ci++] = *p;
+        }
+    }
+    cfmt[ci] = '\0';
+
     struct tm t;
     memset(&t, 0, sizeof(t));
 
     /* Use strptime for parsing */
-    char *result = strptime(str, fmt, &t);
+    char *result = strptime(str, cfmt, &t);
     if (!result) return eka_nil();
 
     /* Return a map with the parsed components */
