@@ -595,13 +595,13 @@ static void test_math(void) {
     {
         eka_value_t args[] = { eka_number(3.7) };
         eka_value_t r = call_method(math_obj, "floor", &vm, args, 1);
-        CHECK(eka_is_number(r) && eka_as_number(r) == 3.0, "floor(3.7) = 3");
+        CHECK(eka_is_int(r) && eka_as_int(r) == 3, "floor(3.7) = 3");
     }
     /* ceil */
     {
         eka_value_t args[] = { eka_number(3.2) };
         eka_value_t r = call_method(math_obj, "ceil", &vm, args, 1);
-        CHECK(eka_is_number(r) && eka_as_number(r) == 4.0, "ceil(3.2) = 4");
+        CHECK(eka_is_int(r) && eka_as_int(r) == 4, "ceil(3.2) = 4");
     }
     /* abs */
     {
@@ -613,7 +613,7 @@ static void test_math(void) {
     {
         eka_value_t args[] = { eka_int(10), eka_int(3) };
         eka_value_t r = call_method(math_obj, "min", &vm, args, 2);
-        CHECK(eka_is_number(r) && eka_as_number(r) == 3.0, "min(10,3) = 3");
+        CHECK(eka_is_int(r) && eka_as_int(r) == 3, "min(10,3) = 3");
     }
     PASS();
 }
@@ -1292,7 +1292,7 @@ static void test_datetime_parse(void) {
     eka_value_t dt_obj = eka_vm_get_global(&vm, "datetime");
     eka_value_t args[] = {
         eka_string_val(eka_string_new("2024-01-15", 10)),
-        eka_string_val(eka_string_new("%Y-%m-%d", 8)),
+        eka_string_val(eka_string_new("YYYY-MM-DD", 10)),
     };
     eka_value_t r = call_method(dt_obj, "parse", &vm, args, 2);
 
@@ -1360,6 +1360,177 @@ static void test_response_cookie(void) {
     PASS();
 }
 
+/* ================================================================
+ * Test: regex.replace argument order
+ * ================================================================ */
+
+static void test_regex_replace(void) {
+    TEST("regex.replace arg order");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t regex_obj = eka_vm_get_global(&vm, "regex");
+    eka_value_t args[] = {
+        eka_string_val(eka_string_new("foo", 3)),      /* pattern */
+        eka_string_val(eka_string_new("foo bar", 7)),  /* subject */
+        eka_string_val(eka_string_new("baz", 3)),      /* replacement */
+    };
+    eka_value_t r = call_method(regex_obj, "replace", &vm, args, 3);
+    CHECK(eka_obj_is_type(r, OBJ_STRING), "replace should return string");
+    CHECK(strcmp(eka_as_string(r)->data, "baz bar") == 0,
+          "regex.replace('foo', 'foo bar', 'baz') = 'baz bar'");
+    PASS();
+}
+
+/* ================================================================
+ * Test: datetime.parse with Eka format tokens
+ * ================================================================ */
+
+static void test_datetime_parse_tokens(void) {
+    TEST("datetime.parse YYYY-MM-DD tokens");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t dt_obj = eka_vm_get_global(&vm, "datetime");
+    eka_value_t args[] = {
+        eka_string_val(eka_string_new("2024-01-15", 10)),
+        eka_string_val(eka_string_new("YYYY-MM-DD", 10)),
+    };
+    eka_value_t r = call_method(dt_obj, "parse", &vm, args, 2);
+    CHECK(eka_obj_is_type(r, OBJ_MAP), "parse should return map");
+
+    eka_map_t *m = eka_as_map(r);
+    eka_value_t year = eka_map_get(m, eka_string_intern("year", 4));
+    CHECK(eka_is_int(year) && eka_as_int(year) == 2024, "year should be 2024");
+
+    eka_value_t month = eka_map_get(m, eka_string_intern("month", 5));
+    CHECK(eka_is_int(month) && eka_as_int(month) == 1, "month should be 1");
+
+    eka_value_t day = eka_map_get(m, eka_string_intern("day", 3));
+    CHECK(eka_is_int(day) && eka_as_int(day) == 15, "day should be 15");
+
+    PASS();
+}
+
+/* ================================================================
+ * Test: session.csrf() idempotency
+ * ================================================================ */
+
+static void test_session_csrf(void) {
+    TEST("session.csrf idempotency");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    /* Manually set up session data for testing */
+    vm.session_data = eka_map_new(8);
+    vm.session_dirty = false;
+
+    eka_value_t sess_obj = eka_vm_get_global(&vm, "session");
+
+    /* Call csrf() first time */
+    eka_value_t r1 = call_method(sess_obj, "csrf", &vm, NULL, 0);
+    CHECK(eka_obj_is_type(r1, OBJ_STRING), "csrf should return string");
+    CHECK(eka_as_string(r1)->length == 32, "csrf token should be 32 chars");
+
+    /* Call csrf() second time - should return same token */
+    eka_value_t r2 = call_method(sess_obj, "csrf", &vm, NULL, 0);
+    CHECK(eka_obj_is_type(r2, OBJ_STRING), "csrf second call should return string");
+    CHECK(strcmp(eka_as_string(r1)->data, eka_as_string(r2)->data) == 0,
+          "csrf() should return same token on subsequent calls");
+
+    PASS();
+}
+
+/* ================================================================
+ * Test: math functions return int for whole numbers
+ * ================================================================ */
+
+static void test_math_int_return(void) {
+    TEST("math.floor/ceil/round/min/max return int");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    eka_value_t math_obj = eka_vm_get_global(&vm, "math");
+
+    /* floor(3.0) should return int */
+    {
+        eka_value_t args[] = { eka_number(3.0) };
+        eka_value_t r = call_method(math_obj, "floor", &vm, args, 1);
+        CHECK(eka_is_int(r), "floor(3.0) should return int");
+        CHECK(eka_as_int(r) == 3, "floor(3.0) = 3");
+    }
+    /* ceil(4.0) should return int */
+    {
+        eka_value_t args[] = { eka_number(4.0) };
+        eka_value_t r = call_method(math_obj, "ceil", &vm, args, 1);
+        CHECK(eka_is_int(r), "ceil(4.0) should return int");
+        CHECK(eka_as_int(r) == 4, "ceil(4.0) = 4");
+    }
+    /* round(5.0) should return int */
+    {
+        eka_value_t args[] = { eka_number(5.0) };
+        eka_value_t r = call_method(math_obj, "round", &vm, args, 1);
+        CHECK(eka_is_int(r), "round(5.0) should return int");
+        CHECK(eka_as_int(r) == 5, "round(5.0) = 5");
+    }
+    /* min(10, 3) should return int */
+    {
+        eka_value_t args[] = { eka_int(10), eka_int(3) };
+        eka_value_t r = call_method(math_obj, "min", &vm, args, 2);
+        CHECK(eka_is_int(r), "min(10, 3) should return int");
+        CHECK(eka_as_int(r) == 3, "min(10, 3) = 3");
+    }
+    /* max(10, 3) should return int */
+    {
+        eka_value_t args[] = { eka_int(10), eka_int(3) };
+        eka_value_t r = call_method(math_obj, "max", &vm, args, 2);
+        CHECK(eka_is_int(r), "max(10, 3) should return int");
+        CHECK(eka_as_int(r) == 10, "max(10, 3) = 10");
+    }
+
+    PASS();
+}
+
+/* ================================================================
+ * Test: request.form() parsing
+ * ================================================================ */
+
+static void test_request_form(void) {
+    TEST("request.form POST body parsing");
+    eka_vm_t vm;
+    eka_vm_init(&vm);
+    eka_builtins_register(&vm);
+
+    /* Craft a fake POST request with form body */
+    char raw[] = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 19\r\n\r\nname=Alice&age=30";
+    eka_http_request_t req;
+    eka_http_parse(&req, raw, strlen(raw));
+
+    eka_builtins_setup_request(&vm, &req);
+
+    eka_value_t request_obj = eka_vm_get_global(&vm, "request");
+    eka_value_t r = call_method(request_obj, "form", &vm, NULL, 0);
+    CHECK(eka_obj_is_type(r, OBJ_MAP), "form() should return map");
+
+    eka_map_t *form = eka_as_map(r);
+    eka_value_t name_val = eka_map_get(form, eka_string_intern("name", 4));
+    CHECK(eka_obj_is_type(name_val, OBJ_STRING), "name should be string");
+    CHECK(strcmp(eka_as_string(name_val)->data, "Alice") == 0,
+          "name should be 'Alice'");
+
+    eka_value_t age_val = eka_map_get(form, eka_string_intern("age", 3));
+    CHECK(eka_obj_is_type(age_val, OBJ_STRING), "age should be string");
+    CHECK(strcmp(eka_as_string(age_val)->data, "30") == 0,
+          "age should be '30'");
+
+    eka_builtins_teardown_request(&vm);
+    PASS();
+}
+
 int main(void) {
     printf("Builtins tests:\n");
 
@@ -1402,6 +1573,13 @@ int main(void) {
     test_crypto_hmac();
     test_datetime_parse();
     test_response_cookie();
+
+    /* Audit fix tests */
+    test_regex_replace();
+    test_datetime_parse_tokens();
+    test_session_csrf();
+    test_math_int_return();
+    test_request_form();
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
