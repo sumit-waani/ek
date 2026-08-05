@@ -2,7 +2,7 @@
 
 > *One file. One truth. `eka run` and ship it.*
 
-Eka is the simplest programming language for the web. A single `.eka` file contains your entire application. 26 builtins cover 90–95% of what web apps need. Zero config, zero dependencies.
+Eka is the simplest programming language for the web. A single `.eka` file contains your entire application. 27 builtins cover 90–95% of what web apps need. Zero config, zero dependencies.
 
 ## Docs
 
@@ -10,7 +10,7 @@ Eka is the simplest programming language for the web. A single `.eka` file conta
 |----------|----------|
 | [VISION](VISION.md) | Philosophy, target audience, what Eka is and isn't |
 | [LANGUAGE](LANGUAGE.md) | Complete syntax: variables, types, functions, control flow, HTML integration |
-| [BUILTINS](BUILTINS.md) | All 26 builtins: full API reference with examples |
+| [BUILTINS](BUILTINS.md) | All 27 builtins: full API reference with examples |
 | [ROUTING](ROUTING.md) | File structure, method blocks, request/response, sessions, CSRF, SSE, static files |
 | [CLIENT-RUNTIME](CLIENT-RUNTIME.md) | `/_eka.js`, `e-*` attributes, swap strategies, JS API, security |
 | [ARCHITECTURE](ARCHITECTURE.md) | VM design, process model, NaN-boxing, GC, memory model |
@@ -69,3 +69,4 @@ Drop app.eka into the Eka Dashboard → done.
 | 24 | `sitemap` | XML sitemap generation |
 | 25 | `str` | String manipulation (split, replace, lower, upper, trim, etc.) |
 | 26 | `math` | Math operations (floor, ceil, round, abs, min, max, random) |
+| 27 | `number` | Number parsing (parse string to int/float) |
